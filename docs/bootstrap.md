@@ -132,4 +132,9 @@ ordinary copy of the stage-one compiler prefix and overlays only upstream's
 static `libgcc`, unwind/gcov headers, and x86-64 target CRT helpers. The driver
 must relocate to the new prefix and resolve every runtime file there; the
 cohort sysroot must remain byte-for-byte unchanged. No `libgcc_s`, functional
-libc, dynamic loader, or profiling library is claimed at this milestone.
+libc, dynamic loader, or profiling library is claimed at this milestone. The
+unselected final-prefix directory is established before persistent probes run,
+so runtime lookups, symbol output, and the retained linker map never depend on
+disposable build paths. Completed and idempotent validation replays those
+semantic lookup, archive, symbol, and linker-map contracts in addition to
+checking their receipt-bound hashes.

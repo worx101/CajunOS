@@ -511,6 +511,90 @@ class LibgccBootstrapStageTests(unittest.TestCase):
             message="runtime archive is not a plain mode-0644 file",
         )
 
+    def test_nm_contract_binds_every_record_to_the_live_archive(self) -> None:
+        _, archive, _, _ = self.link_map_fixture()
+        nm_output = self.temporary_root / "libgcc.nm"
+        self.write_file(
+            nm_output,
+            "\n".join(
+                [
+                    f"{archive}:one.o:0000000000000000 T __udivti3",
+                    f"{archive}:two.o:0000000000000010 T _Unwind_RaiseException",
+                    "",
+                ]
+            ),
+        )
+        self.run_internal("nm-contract", nm_output, archive)
+
+        stale = self.temporary_root / "tools/.tmp-removed" / RUNTIME_ROOT / "libgcc.a"
+        nm_output.write_text(
+            nm_output.read_text(encoding="utf-8").replace(str(archive), str(stale)),
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "nm-contract",
+            nm_output,
+            archive,
+            message="uses an invalid path",
+        )
+
+    def test_probe_path_contract_rejects_disposable_or_absolute_probe_paths(self) -> None:
+        candidate, archive, link_map, members = self.link_map_fixture()
+        stable_prefix = candidate.parent / "libgcc-bootstrap-complete"
+        stable_archive = stable_prefix / RUNTIME_ROOT / "libgcc.a"
+        probe = self.temporary_root / "probe"
+        probe.mkdir()
+        stable_map = link_map.read_text(encoding="utf-8").replace(
+            str(candidate), str(stable_prefix)
+        )
+        stable_map = stable_map.replace("LOAD /tmp/cajunos-probe.o", "LOAD start.o")
+        stable_map += "OUTPUT(start elf64-x86-64)\n"
+        self.write_file(probe / "start.map", stable_map)
+        shutil.copy2(members, probe / "libgcc.members")
+        lookups = self.temporary_root / "runtime-lookups.txt"
+        self.write_file(
+            probe / "runtime-lookups.txt",
+            lookups.read_text(encoding="utf-8").replace(
+                str(candidate), str(stable_prefix)
+            ),
+        )
+        self.write_file(
+            probe / "libgcc.nm",
+            "\n".join(
+                [
+                    f"{stable_archive}:one.o:0000000000000000 T __udivti3",
+                    f"{stable_archive}:two.o:0000000000000010 T _Unwind_RaiseException",
+                    "",
+                ]
+            ),
+        )
+        self.write_file(probe / "start.o", b"object")
+        self.write_file(probe / "start", b"executable", 0o755)
+        self.run_internal("probe-path-contract", probe)
+
+        (probe / "start.map").write_text(
+            stable_map.replace("LOAD start.o", "LOAD /tmp/ccDEADBEEF.o"),
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "probe-path-contract",
+            probe,
+            message="retains a disposable path",
+        )
+
+        (probe / "start.map").write_text(stable_map, encoding="utf-8")
+        (probe / "libgcc.nm").write_text(
+            (probe / "libgcc.nm")
+            .read_text(encoding="utf-8")
+            .replace("/tools/", "/tools/.tmp-libgcc-bootstrap-dead/"),
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "probe-path-contract",
+            probe,
+            message="retains a disposable path",
+        )
+
     def test_gcc_header_contract_accepts_current_deferred_make_semantics(self) -> None:
         target_sysroot = self.temporary_root / "target-sysroot"
         build_sysroot = self.temporary_root / "sealed-build-sysroot"
@@ -906,6 +990,49 @@ class LibgccBootstrapStageTests(unittest.TestCase):
         self.populate_base(base)
         self.populate_result(base, prefix)
         self.write_file(artifact / "probe/freestanding.elf", b"ELF64 probe")
+        runtime = prefix / RUNTIME_ROOT
+        archive = runtime / "libgcc.a"
+        probe = artifact / "probe"
+        self.write_file(
+            probe / "runtime-lookups.txt",
+            "".join(
+                f"{name}={runtime / name}\n" for name in LOOKUP_NAMES
+            ),
+        )
+        archive_members = subprocess.run(
+            ["ar", "t", str(archive)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.splitlines()
+        self.write_file(
+            probe / "libgcc.members", "\n".join(archive_members) + "\n"
+        )
+        self.write_file(
+            probe / "libgcc.nm",
+            "\n".join(
+                [
+                    f"{archive}:{archive_members[0]}:0000000000000000 T __udivti3",
+                    f"{archive}:{archive_members[0]}:0000000000000010 T _Unwind_RaiseException",
+                    "",
+                ]
+            ),
+        )
+        self.write_file(probe / "start.o", b"ELF64 probe object")
+        self.write_file(probe / "start", b"ELF64 probe executable", 0o755)
+        self.write_file(
+            probe / "start.map",
+            "\n".join(
+                [
+                    f"{archive}({archive_members[0]})",
+                    "LOAD start.o",
+                    f"LOAD {archive}",
+                    f" .text 0x0000000000401000 {archive}({archive_members[0]})",
+                    "OUTPUT(start elf64-x86-64)",
+                    "",
+                ]
+            ),
+        )
         self.write_file(artifact / "configuration/build-a.config.log", "configured\n")
         self.write_file(
             artifact / "licenses/gcc/COPYING.RUNTIME", "GCC Runtime Exception\n"
@@ -929,13 +1056,6 @@ class LibgccBootstrapStageTests(unittest.TestCase):
         configure_digest = hashlib.sha256(
             b"".join(value.encode("utf-8") + b"\0" for value in configure_args)
         ).hexdigest()
-        archive = prefix / RUNTIME_ROOT / "libgcc.a"
-        archive_members = subprocess.run(
-            ["ar", "t", str(archive)],
-            check=True,
-            text=True,
-            capture_output=True,
-        ).stdout.splitlines()
         receipt: dict[str, object] = {
             "schema": 1,
             "build_id": "libgcc-bootstrap-complete",
@@ -1150,6 +1270,112 @@ class LibgccBootstrapStageTests(unittest.TestCase):
                     "schema",
                     "1",
                 )
+
+    def test_completed_validation_semantically_rejects_rehashed_stale_probe_paths(self) -> None:
+        receipt_path, prefix, base, tools, receipt = self.completed_fixture()
+        probe = receipt_path.parent / "probe"
+        stale_prefix = tools / ".tmp-libgcc-bootstrap-removed-a-123"
+
+        lookups = probe / "runtime-lookups.txt"
+        lookups.write_text(
+            lookups.read_text(encoding="utf-8").replace(
+                str(prefix), str(stale_prefix)
+            ),
+            encoding="utf-8",
+        )
+        receipt["outputs"]["probe_sha256"] = self.regular_hashes(probe)
+        self.write_receipt(receipt_path, receipt)
+        self.assert_internal_fails(
+            "validate-completed",
+            receipt_path,
+            prefix,
+            base,
+            tools,
+            TARGET,
+            GCC_VERSION,
+            "schema",
+            "1",
+            message="uses an invalid path",
+        )
+
+    def test_completed_validation_semantically_rejects_rehashed_stale_map_or_nm(self) -> None:
+        for evidence_name in ("start.map", "libgcc.nm"):
+            with self.subTest(evidence=evidence_name):
+                root = self.temporary_root / evidence_name.replace(".", "-")
+                original_root = self.temporary_root
+                self.temporary_root = root
+                root.mkdir()
+                try:
+                    receipt_path, prefix, base, tools, receipt = self.completed_fixture()
+                    probe = receipt_path.parent / "probe"
+                    evidence = probe / evidence_name
+                    evidence.write_text(
+                        evidence.read_text(encoding="utf-8").replace(
+                            str(prefix),
+                            str(tools / ".tmp-libgcc-bootstrap-removed-a-456"),
+                        ),
+                        encoding="utf-8",
+                    )
+                    receipt["outputs"]["probe_sha256"] = self.regular_hashes(probe)
+                    self.write_receipt(receipt_path, receipt)
+                    self.assert_internal_fails(
+                        "validate-completed",
+                        receipt_path,
+                        prefix,
+                        base,
+                        tools,
+                        TARGET,
+                        GCC_VERSION,
+                        "schema",
+                        "1",
+                        message="uses an invalid path",
+                    )
+                finally:
+                    self.temporary_root = original_root
+
+    def test_completed_validation_rejects_rehashed_disposable_probe_object(self) -> None:
+        receipt_path, prefix, base, tools, receipt = self.completed_fixture()
+        probe = receipt_path.parent / "probe"
+        link_map = probe / "start.map"
+        link_map.write_text(
+            link_map.read_text(encoding="utf-8").replace(
+                "LOAD start.o", "LOAD /tmp/ccDEADBEEF.o"
+            ),
+            encoding="utf-8",
+        )
+        receipt["outputs"]["probe_sha256"] = self.regular_hashes(probe)
+        self.write_receipt(receipt_path, receipt)
+        self.assert_internal_fails(
+            "validate-completed",
+            receipt_path,
+            prefix,
+            base,
+            tools,
+            TARGET,
+            GCC_VERSION,
+            "schema",
+            "1",
+            message="retains a disposable path",
+        )
+
+    def test_completed_validation_rejects_rehashed_member_evidence(self) -> None:
+        receipt_path, prefix, base, tools, receipt = self.completed_fixture()
+        probe = receipt_path.parent / "probe"
+        (probe / "libgcc.members").write_text("forged-member.o\n", encoding="utf-8")
+        receipt["outputs"]["probe_sha256"] = self.regular_hashes(probe)
+        self.write_receipt(receipt_path, receipt)
+        self.assert_internal_fails(
+            "validate-completed",
+            receipt_path,
+            prefix,
+            base,
+            tools,
+            TARGET,
+            GCC_VERSION,
+            "schema",
+            "1",
+            message="does not match the live archive",
+        )
 
 
     def tools_layout(self, selected: str) -> tuple[Path, Path]:

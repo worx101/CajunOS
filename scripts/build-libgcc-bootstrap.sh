@@ -281,6 +281,91 @@ def validate_libgcc_link_map(
             fail(f"link map names an absent libgcc archive member: {member}")
 
 
+def validate_libgcc_nm(nm_path: Path, runtime_archive: Path) -> None:
+    if (
+        not runtime_archive.is_absolute()
+        or str(runtime_archive) != os.path.normpath(runtime_archive)
+    ):
+        fail("unsafe runtime archive for nm contract")
+    try:
+        archive_metadata = runtime_archive.lstat()
+    except FileNotFoundError:
+        fail("nm runtime archive does not exist")
+    if (
+        not stat.S_ISREG(archive_metadata.st_mode)
+        or archive_metadata.st_nlink != 1
+        or stat.S_IMODE(archive_metadata.st_mode) != 0o644
+    ):
+        fail("nm runtime archive is not a plain mode-0644 file")
+    try:
+        nm_metadata = nm_path.lstat()
+    except FileNotFoundError:
+        fail("libgcc nm attestation does not exist")
+    if (
+        not stat.S_ISREG(nm_metadata.st_mode)
+        or nm_metadata.st_nlink != 1
+        or stat.S_IMODE(nm_metadata.st_mode) != 0o644
+    ):
+        fail("libgcc nm attestation is not a plain mode-0644 single-linked file")
+    lines = nm_path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        fail("libgcc nm attestation is empty")
+    for line in lines:
+        reported, separator, remainder = line.partition(":")
+        if not separator or not remainder:
+            fail("libgcc nm attestation has a malformed archive record")
+        require_semantic_path(reported, runtime_archive, "libgcc nm archive")
+    for symbol in ("__udivti3", "_Unwind_RaiseException"):
+        if not any(
+            re.search(rf"\s[TW]\s+{re.escape(symbol)}$", line)
+            for line in lines
+        ):
+            fail(f"libgcc nm attestation lacks {symbol}")
+
+
+def validate_probe_path_stability(probe_root: Path) -> None:
+    try:
+        root_metadata = probe_root.lstat()
+    except FileNotFoundError:
+        fail("probe attestation directory does not exist")
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        fail("probe attestation path is not a real directory")
+    text_paths = tuple(
+        probe_root / name
+        for name in ("runtime-lookups.txt", "start.map", "libgcc.nm")
+    )
+    for path in text_paths:
+        metadata = path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o644
+        ):
+            fail(f"persistent probe evidence is not a plain mode-0644 file: {path}")
+        contents = path.read_text(encoding="utf-8")
+        if "/.tmp-libgcc-bootstrap-" in contents or re.search(
+            r"/tmp/cc[A-Za-z0-9]+", contents
+        ):
+            fail(f"persistent probe evidence retains a disposable path: {path}")
+    map_lines = text_paths[1].read_text(encoding="utf-8").splitlines()
+    if map_lines.count("LOAD start.o") != 1:
+        fail("link map does not retain exactly one stable probe-object load")
+    if map_lines.count("OUTPUT(start elf64-x86-64)") != 1:
+        fail("link map does not retain its stable probe output identity")
+    for name, expected_mode in (("start.o", 0o644), ("start", 0o755)):
+        path = probe_root / name
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            fail(f"persistent probe output is absent: {name}")
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != expected_mode
+        ):
+            fail(f"persistent probe output has unsafe metadata: {name}")
+
+
 def derive_delta(
     base: dict[str, object], result: dict[str, object], target: str, version: str
 ) -> dict[str, object]:
@@ -450,6 +535,14 @@ elif command == "link-map-contract":
     validate_libgcc_link_map(
         Path(arguments[0]), Path(arguments[1]), Path(arguments[2])
     )
+elif command == "nm-contract":
+    if len(arguments) != 2:
+        fail("nm-contract requires NM RUNTIME_ARCHIVE")
+    validate_libgcc_nm(Path(arguments[0]), Path(arguments[1]))
+elif command == "probe-path-contract":
+    if len(arguments) != 1:
+        fail("probe-path-contract requires PROBE_ROOT")
+    validate_probe_path_stability(Path(arguments[0]))
 elif command == "compare-json":
     if len(arguments) != 2:
         fail("compare-json requires LEFT RIGHT")
@@ -773,6 +866,18 @@ elif command == "validate-completed":
         != hashlib.sha256("\n".join(members).encode("utf-8") + b"\n").hexdigest()
     ):
         fail("completed libgcc archive attestation is invalid")
+    probe_root = receipt_path.parent / "probe"
+    probe_members = (probe_root / "libgcc.members").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    if probe_members != members:
+        fail("completed libgcc member evidence does not match the live archive")
+    validate_runtime_lookups(runtime_root, probe_root / "runtime-lookups.txt")
+    validate_libgcc_link_map(
+        probe_root / "start.map", archive, probe_root / "libgcc.members"
+    )
+    validate_libgcc_nm(probe_root / "libgcc.nm", archive)
+    validate_probe_path_stability(probe_root)
     if runtime_root not in [path.parent for path in (prefix / item for item in runtime_paths(target, version))]:
         fail("invalid runtime layout")
 else:
@@ -1266,20 +1371,17 @@ build_succeeded=0
 on_exit() {
   local status=$?
   if (( status != 0 || build_succeeded == 0 )); then
-    if [[ -d $temporary_root && ! -L $temporary_root ]]; then
-      if [[ -e $candidate_a || -L $candidate_a ]]; then
-        mv -T -- "$candidate_a" "$temporary_root/candidate-a"
-      fi
-      if [[ -e $candidate_b || -L $candidate_b ]]; then
-        mv -T -- "$candidate_b" "$temporary_root/candidate-b"
-      fi
-      mv -T -- "$temporary_root" "$failed_root"
-    elif [[ -e $temporary_root || -L $temporary_root \
-         || -e $candidate_a || -L $candidate_a \
-         || -e $candidate_b || -L $candidate_b ]]; then
+    if [[ -e $temporary_root || -L $temporary_root \
+       || -e $build_final || -L $build_final \
+       || -e $candidate_a || -L $candidate_a \
+       || -e $candidate_b || -L $candidate_b \
+       || -e $prefix_final || -L $prefix_final ]]; then
       mkdir -- "$failed_root"
       if [[ -e $temporary_root || -L $temporary_root ]]; then
         mv -T -- "$temporary_root" "$failed_root/temporary-root-entry"
+      fi
+      if [[ -e $build_final || -L $build_final ]]; then
+        mv -T -- "$build_final" "$failed_root/build-final-entry"
       fi
       if [[ -e $candidate_a || -L $candidate_a ]]; then
         mv -T -- "$candidate_a" "$failed_root/candidate-a"
@@ -1287,9 +1389,19 @@ on_exit() {
       if [[ -e $candidate_b || -L $candidate_b ]]; then
         mv -T -- "$candidate_b" "$failed_root/candidate-b"
       fi
+      if [[ -e $prefix_final || -L $prefix_final ]]; then
+        mv -T -- "$prefix_final" "$failed_root/candidate-a-published"
+      fi
     fi
-    if [[ -e $artifact_temporary || -L $artifact_temporary ]]; then
-      mv -T -- "$artifact_temporary" "$failed_artifact"
+    if [[ -e $artifact_temporary || -L $artifact_temporary \
+       || -e $artifact_final || -L $artifact_final ]]; then
+      mkdir -- "$failed_artifact"
+      if [[ -e $artifact_temporary || -L $artifact_temporary ]]; then
+        mv -T -- "$artifact_temporary" "$failed_artifact/temporary-artifact-entry"
+      fi
+      if [[ -e $artifact_final || -L $artifact_final ]]; then
+        mv -T -- "$artifact_final" "$failed_artifact/artifact-final-entry"
+      fi
     fi
   fi
 }
@@ -1391,6 +1503,20 @@ build_one() {
 "$script_path" --internal-python compare-json \
   "$artifact_temporary/delta-a.json" "$artifact_temporary/delta-b.json"
 
+# Give all persistent probe evidence the prefix identity it will retain after
+# publication. tools/current still selects the sealed GCC stage-one base, and
+# the failure trap quarantines this unselected prefix if any later check fails.
+"$script_path" --internal-python validate-directories "$cajunos_root" \
+  work work/toolchain tools artifacts logs sysroot "sysroot/$cohort_id"
+if [[ $candidate_a != "$tools_root/.tmp-$build_id-a-$$" \
+   || ! -d $candidate_a || -L $candidate_a \
+   || ! -d $candidate_b || -L $candidate_b \
+   || -e $prefix_final || -L $prefix_final ]]; then
+  echo "CajunOS probe-publication paths changed after validation" >&2
+  exit 105
+fi
+mv -T -- "$candidate_a" "$prefix_final"
+
 probe_dir=$artifact_temporary/probe
 configuration_dir=$artifact_temporary/configuration
 license_dir=$artifact_temporary/licenses/gcc
@@ -1402,8 +1528,8 @@ cp -- "$build_a/$target/libgcc/config.log" \
 cp -- "$build_b/$target/libgcc/config.log" \
   "$configuration_dir/build-b.libgcc.config.log"
 
-gcc_driver=$candidate_a/bin/$target-gcc
-runtime_dir=$candidate_a/lib/gcc/$target/$gcc_version
+gcc_driver=$prefix_final/bin/$target-gcc
+runtime_dir=$prefix_final/lib/gcc/$target/$gcc_version
 [[ -x $gcc_driver ]] || { echo "Derived prefix lacks GCC driver" >&2; exit 84; }
 [[ $($gcc_driver -dumpmachine) == "$target" ]] || {
   echo "Derived GCC reports unexpected target" >&2
@@ -1418,7 +1544,7 @@ runtime_dir=$candidate_a/lib/gcc/$target/$gcc_version
   exit 87
 }
 cc1_path=$($gcc_driver -print-prog-name=cc1)
-[[ -x $cc1_path && $cc1_path == "$candidate_a"/* ]] || {
+[[ -x $cc1_path && $cc1_path == "$prefix_final"/* ]] || {
   echo "Derived GCC did not relocate cc1 into its own prefix" >&2
   exit 88
 }
@@ -1457,15 +1583,8 @@ printf '#include <unwind.h>\n_Unwind_Reason_Code cajunos_unwind(void);\n' |
 }
 "$binutils_prefix/bin/$target-nm" -A "$runtime_dir/libgcc.a" \
   > "$probe_dir/libgcc.nm"
-grep -Eq '[[:space:]][TW][[:space:]]+__udivti3$' "$probe_dir/libgcc.nm" || {
-  echo "Static libgcc lacks __udivti3" >&2
-  exit 92
-}
-grep -Eq '[[:space:]][TW][[:space:]]+_Unwind_RaiseException$' \
-  "$probe_dir/libgcc.nm" || {
-  echo "Static libgcc lacks unwind implementation" >&2
-  exit 93
-}
+"$script_path" --internal-python nm-contract \
+  "$probe_dir/libgcc.nm" "$runtime_dir/libgcc.a" || exit 92
 
 declare -a crt_files=(
   crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o
@@ -1505,10 +1624,15 @@ __attribute__((noreturn)) void _start(void)
 }
 EOF
 "$gcc_driver" \
-  -O2 -ffreestanding -fno-stack-protector -fno-pie -no-pie \
-  -nostdlib -nostartfiles -nodefaultlibs -Wl,-e,_start \
-  -Wl,-Map,"$probe_dir/start.map" \
-  "$probe_dir/start.c" -lgcc -o "$probe_dir/start"
+  -O2 -ffreestanding -fno-stack-protector -fno-pie \
+  -c "$probe_dir/start.c" -o "$probe_dir/start.o"
+(
+  cd "$probe_dir"
+  "$gcc_driver" \
+    -O2 -ffreestanding -fno-stack-protector -fno-pie -no-pie \
+    -nostdlib -nostartfiles -nodefaultlibs -Wl,-e,_start \
+    -Wl,-Map,start.map start.o -lgcc -o start
+)
 "$binutils_prefix/bin/$target-readelf" -h "$probe_dir/start" \
   > "$probe_dir/start.readelf-h"
 "$binutils_prefix/bin/$target-readelf" -l "$probe_dir/start" \
@@ -1528,10 +1652,11 @@ fi
 "$script_path" --internal-python link-map-contract \
   "$probe_dir/start.map" "$runtime_dir/libgcc.a" \
   "$probe_dir/libgcc.members" || exit 97
+"$script_path" --internal-python probe-path-contract "$probe_dir" || exit 98
 "$probe_dir/start"
 
 "$script_path" --internal-python dependency-inventory \
-  "$candidate_a" "$tools_root" > "$artifact_temporary/inventory-after-probe.json"
+  "$prefix_final" "$tools_root" > "$artifact_temporary/inventory-after-probe.json"
 "$script_path" --internal-python compare-json \
   "$artifact_temporary/inventory-a.json" \
   "$artifact_temporary/inventory-after-probe.json"
@@ -1823,7 +1948,7 @@ if [[ -n $(git -C "$project_root" status --porcelain) \
   exit 103
 fi
 "$script_path" --internal-python validate-completed \
-  "$artifact_temporary/receipt.json" "$candidate_a" "$gcc_prefix" "$tools_root" \
+  "$artifact_temporary/receipt.json" "$prefix_final" "$gcc_prefix" "$tools_root" \
   "$target" "$gcc_version" \
   schema 1 component gcc stage libgcc-bootstrap build_id "$build_id" \
   source_commit "$locked_gcc_commit" source_tree "$locked_gcc_tree" \
@@ -1848,13 +1973,13 @@ fi
   work work/toolchain tools artifacts logs sysroot "sysroot/$cohort_id"
 if [[ $candidate_a != "$tools_root/.tmp-$build_id-a-$$" \
    || $candidate_b != "$tools_root/.tmp-$build_id-b-$$" \
-   || ! -d $candidate_a || -L $candidate_a \
+   || -e $candidate_a || -L $candidate_a \
    || ! -d $candidate_b || -L $candidate_b \
+   || ! -d $prefix_final || -L $prefix_final \
    || ! -d $temporary_root || -L $temporary_root \
    || ! -d $artifact_temporary || -L $artifact_temporary \
    || ! -f $artifact_temporary/receipt.json \
    || -L $artifact_temporary/receipt.json \
-   || -e $prefix_final || -L $prefix_final \
    || -e $build_final || -L $build_final \
    || -e $artifact_final || -L $artifact_final ]]; then
   echo "CajunOS publication paths changed after validation" >&2
@@ -1862,7 +1987,6 @@ if [[ $candidate_a != "$tools_root/.tmp-$build_id-a-$$" \
 fi
 
 # Publish immutable state first, then advance tools/current atomically last.
-mv -T -- "$candidate_a" "$prefix_final"
 rm -rf -- "$candidate_b" "$overlay_a" "$overlay_b"
 mv -T -- "$temporary_root" "$build_final"
 mv -T -- "$artifact_temporary" "$artifact_final"
