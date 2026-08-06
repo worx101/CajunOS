@@ -135,6 +135,76 @@ def runtime_paths(target: str, version: str) -> set[str]:
     }
 
 
+def runtime_lookup_names() -> tuple[str, ...]:
+    return (
+        "libgcc.a",
+        "crtbegin.o",
+        "crtbeginS.o",
+        "crtbeginT.o",
+        "crtend.o",
+        "crtendS.o",
+        "crtfastmath.o",
+        "crtprec32.o",
+        "crtprec64.o",
+        "crtprec80.o",
+    )
+
+
+def validate_runtime_lookups(runtime_root: Path, lookup_path: Path) -> None:
+    if (
+        not runtime_root.is_absolute()
+        or str(runtime_root) != os.path.normpath(runtime_root)
+    ):
+        fail("unsafe runtime root for GCC lookup contract")
+    try:
+        runtime_metadata = runtime_root.lstat()
+    except FileNotFoundError:
+        fail("GCC lookup runtime root does not exist")
+    if not stat.S_ISDIR(runtime_metadata.st_mode):
+        fail("GCC lookup runtime root is not a real directory")
+    try:
+        lookup_metadata = lookup_path.lstat()
+    except FileNotFoundError:
+        fail("GCC runtime lookup attestation does not exist")
+    if not stat.S_ISREG(lookup_metadata.st_mode) or lookup_metadata.st_nlink != 1:
+        fail("GCC runtime lookup attestation is not a plain single-linked file")
+    values: dict[str, str] = {}
+    for line in lookup_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line:
+            fail("GCC runtime lookup attestation is malformed")
+        name, resolved = line.split("=", 1)
+        if name in values:
+            fail(f"GCC runtime lookup attestation repeats {name}")
+        values[name] = resolved
+    expected_names = runtime_lookup_names()
+    if set(values) != set(expected_names) or len(values) != len(expected_names):
+        fail("GCC runtime lookup attestation has unexpected entries")
+    for name in expected_names:
+        expected = runtime_root / name
+        try:
+            metadata = expected.lstat()
+        except FileNotFoundError:
+            fail(f"expected GCC runtime lookup is absent: {name}")
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o644
+        ):
+            fail(f"expected GCC runtime lookup is not a plain mode-0644 file: {name}")
+        resolved = values[name]
+        try:
+            resolved_real = Path(resolved).resolve(strict=True)
+            expected_real = expected.resolve(strict=True)
+        except (FileNotFoundError, RuntimeError):
+            fail(f"derived GCC resolved {name} through an invalid path: {resolved}")
+        if (
+            not os.path.isabs(resolved)
+            or os.path.normpath(resolved) != str(expected)
+            or resolved_real != expected_real
+        ):
+            fail(f"derived GCC resolved {name} outside its runtime prefix: {resolved}")
+
+
 def derive_delta(
     base: dict[str, object], result: dict[str, object], target: str, version: str
 ) -> dict[str, object]:
@@ -294,6 +364,10 @@ elif command == "no-shared-inodes":
         inode_sets.append(seen)
     if inode_sets[0] & inode_sets[1]:
         fail("derived tools prefix shares regular-file inodes with its sealed base")
+elif command == "runtime-lookups-contract":
+    if len(arguments) != 2:
+        fail("runtime-lookups-contract requires RUNTIME_ROOT LOOKUPS")
+    validate_runtime_lookups(Path(arguments[0]), Path(arguments[1]))
 elif command == "compare-json":
     if len(arguments) != 2:
         fail("compare-json requires LEFT RIGHT")
@@ -1285,12 +1359,8 @@ declare -a lookup_files=(
     printf '%s=%s\n' "$name" "$($gcc_driver -print-file-name="$name")"
   done
 } > "$probe_dir/runtime-lookups.txt"
-while IFS='=' read -r name resolved; do
-  [[ $resolved == "$runtime_dir/$name" ]] || {
-    echo "Derived GCC resolved $name outside its runtime prefix: $resolved" >&2
-    exit 90
-  }
-done < "$probe_dir/runtime-lookups.txt"
+"$script_path" --internal-python runtime-lookups-contract \
+  "$runtime_dir" "$probe_dir/runtime-lookups.txt" || exit 90
 
 printf '#include <unwind.h>\n_Unwind_Reason_Code cajunos_unwind(void);\n' |
   "$gcc_driver" -std=c11 -Wall -Werror -ffreestanding -fsyntax-only -x c - \

@@ -17,6 +17,18 @@ SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 TARGET = "x86_64-cajunos-linux-gnu"
 GCC_VERSION = "17.0.0"
 RUNTIME_ROOT = Path("lib/gcc") / TARGET / GCC_VERSION
+LOOKUP_NAMES = (
+    "libgcc.a",
+    "crtbegin.o",
+    "crtbeginS.o",
+    "crtbeginT.o",
+    "crtend.o",
+    "crtendS.o",
+    "crtfastmath.o",
+    "crtprec32.o",
+    "crtprec64.o",
+    "crtprec80.o",
+)
 RUNTIME_FILES = {
     RUNTIME_ROOT / "libgcc.a",
     RUNTIME_ROOT / "include/unwind.h",
@@ -136,6 +148,21 @@ class LibgccBootstrapStageTests(unittest.TestCase):
         )
         return json.loads(output.read_text(encoding="utf-8"))
 
+    def runtime_lookup_fixture(self) -> tuple[Path, Path, Path]:
+        candidate = self.temporary_root / "tools/.tmp-libgcc-bootstrap-a-123"
+        runtime = candidate / RUNTIME_ROOT
+        (candidate / "bin").mkdir(parents=True)
+        for name in LOOKUP_NAMES:
+            self.write_file(runtime / name, f"bootstrap {name}\n")
+        lookups = self.temporary_root / "runtime-lookups.txt"
+        lookup_root = candidate / "bin/.." / RUNTIME_ROOT
+        lookups.write_text(
+            "".join(f"{name}={lookup_root / name}\n" for name in LOOKUP_NAMES),
+            encoding="utf-8",
+        )
+        lookups.chmod(0o644)
+        return candidate, runtime, lookups
+
     def test_build_id_is_stable_order_independent_and_sensitive(self) -> None:
         material = {
             "source_set_digest": "sha256:source",
@@ -214,6 +241,89 @@ class LibgccBootstrapStageTests(unittest.TestCase):
         (right / RUNTIME_ROOT / "crtbegin.o").chmod(0o600)
         self.assertNotEqual(left_inventory["digest"], self.inventory(right)["digest"])
         self.assert_internal_fails("compare", left, right, output)
+
+    def test_runtime_lookup_contract_accepts_lexically_relocated_driver_paths(self) -> None:
+        candidate, runtime, lookups = self.runtime_lookup_fixture()
+        self.run_internal("runtime-lookups-contract", runtime, lookups)
+        lookups.write_text(
+            "".join(
+                f"{name}={candidate / RUNTIME_ROOT / name}\n"
+                for name in LOOKUP_NAMES
+            ),
+            encoding="utf-8",
+        )
+        self.run_internal("runtime-lookups-contract", runtime, lookups)
+
+    def test_runtime_lookup_contract_rejects_external_missing_or_duplicate_paths(self) -> None:
+        candidate, runtime, lookups = self.runtime_lookup_fixture()
+        original = lookups.read_text(encoding="utf-8")
+
+        external = self.temporary_root / "tools/gcc-stage1-base" / RUNTIME_ROOT
+        for name in LOOKUP_NAMES:
+            self.write_file(external / name, f"external {name}\n")
+        lookups.write_text(
+            original.replace(
+                str(candidate / "bin/.." / RUNTIME_ROOT),
+                str(external),
+                1,
+            ),
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "runtime-lookups-contract",
+            runtime,
+            lookups,
+            message="outside its runtime prefix",
+        )
+
+        lines = original.splitlines()
+        lookups.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        self.assert_internal_fails(
+            "runtime-lookups-contract",
+            runtime,
+            lookups,
+            message="unexpected entries",
+        )
+
+        lookups.write_text(original + lines[0] + "\n", encoding="utf-8")
+        self.assert_internal_fails(
+            "runtime-lookups-contract",
+            runtime,
+            lookups,
+            message="repeats libgcc.a",
+        )
+
+    def test_runtime_lookup_contract_rejects_symlink_component_escape(self) -> None:
+        candidate, runtime, lookups = self.runtime_lookup_fixture()
+        (candidate / "bin").rmdir()
+        escaped = self.temporary_root / "escaped/bin-target"
+        escaped.mkdir(parents=True)
+        for name in LOOKUP_NAMES:
+            self.write_file(escaped.parent / RUNTIME_ROOT / name, f"escaped {name}\n")
+        (candidate / "bin").symlink_to(escaped)
+        self.assert_internal_fails(
+            "runtime-lookups-contract",
+            runtime,
+            lookups,
+            message="outside its runtime prefix",
+        )
+
+    def test_runtime_lookup_contract_rejects_non_plain_runtime_files(self) -> None:
+        _, runtime, lookups = self.runtime_lookup_fixture()
+        (runtime / "crtbegin.o").chmod(0o600)
+        self.assert_internal_fails(
+            "runtime-lookups-contract",
+            runtime,
+            lookups,
+            message="not a plain mode-0644 file",
+        )
+        (runtime / "crtbegin.o").unlink()
+        self.assert_internal_fails(
+            "runtime-lookups-contract",
+            runtime,
+            lookups,
+            message="is absent",
+        )
 
     def test_gcc_header_contract_accepts_current_deferred_make_semantics(self) -> None:
         target_sysroot = self.temporary_root / "target-sysroot"
