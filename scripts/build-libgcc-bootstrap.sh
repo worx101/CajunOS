@@ -1037,11 +1037,15 @@ log_file=$log_dir/libgcc-bootstrap.log
 temporary_root=$work_root/.tmp-$build_id-$$
 build_a=$temporary_root/build-a
 build_b=$temporary_root/build-b
-candidate_a=$temporary_root/candidate-a
-candidate_b=$temporary_root/candidate-b
+# Keep unpublished prefixes at final-prefix depth so relative dependency links
+# resolve identically and the managed tools-root inventory guard can attest them.
+candidate_a=$tools_root/.tmp-$build_id-a-$$
+candidate_b=$tools_root/.tmp-$build_id-b-$$
 overlay_a=$temporary_root/overlay-a
 overlay_b=$temporary_root/overlay-b
 artifact_temporary=$artifacts_root/.tmp-$build_id-$$
+failed_root=$work_root/.failed-$build_id-$$
+failed_artifact=$artifacts_root/.failed-$build_id-$$
 
 exec 9>"$cajunos_root/work/.cajunos-build.lock"
 if ! flock -n 9; then
@@ -1049,7 +1053,10 @@ if ! flock -n 9; then
   exit 80
 fi
 
-if [[ -d $build_final && -d $prefix_final && -f $receipt_final ]]; then
+if [[ -d $build_final && ! -L $build_final \
+   && -d $prefix_final && ! -L $prefix_final \
+   && -d $artifact_final && ! -L $artifact_final \
+   && -f $receipt_final && ! -L $receipt_final ]]; then
   "$script_path" --internal-python validate-completed \
     "$receipt_final" "$prefix_final" "$gcc_prefix" "$tools_root" \
     "$target" "$gcc_version" \
@@ -1076,11 +1083,19 @@ if [[ -d $build_final && -d $prefix_final && -f $receipt_final ]]; then
   exit 0
 fi
 
-if [[ -e $build_final || -e $prefix_final || -e $artifact_final ]]; then
+if [[ -e $build_final || -L $build_final \
+   || -e $prefix_final || -L $prefix_final \
+   || -e $artifact_final || -L $artifact_final ]]; then
   echo "Refusing to reuse an incomplete published build: $build_id" >&2
   exit 81
 fi
-if [[ -e $temporary_root || -e $artifact_temporary || -e $log_dir ]]; then
+if [[ -e $temporary_root || -L $temporary_root \
+   || -e $candidate_a || -L $candidate_a \
+   || -e $candidate_b || -L $candidate_b \
+   || -e $artifact_temporary || -L $artifact_temporary \
+   || -e $failed_root || -L $failed_root \
+   || -e $failed_artifact || -L $failed_artifact \
+   || -e $log_dir || -L $log_dir ]]; then
   echo "Refusing colliding temporary or log path for run $run_id" >&2
   exit 82
 fi
@@ -1091,21 +1106,40 @@ if [[ $selector_state != base ]]; then
   exit 83
 fi
 
-mkdir -p "$build_a" "$build_b" "$candidate_a" "$candidate_b" \
-  "$overlay_a" "$overlay_b" "$artifact_temporary" "$log_dir"
 build_succeeded=0
 on_exit() {
   local status=$?
   if (( status != 0 || build_succeeded == 0 )); then
-    if [[ -d $temporary_root ]]; then
-      mv -- "$temporary_root" "$work_root/.failed-$build_id-$$"
+    if [[ -d $temporary_root && ! -L $temporary_root ]]; then
+      if [[ -e $candidate_a || -L $candidate_a ]]; then
+        mv -T -- "$candidate_a" "$temporary_root/candidate-a"
+      fi
+      if [[ -e $candidate_b || -L $candidate_b ]]; then
+        mv -T -- "$candidate_b" "$temporary_root/candidate-b"
+      fi
+      mv -T -- "$temporary_root" "$failed_root"
+    elif [[ -e $temporary_root || -L $temporary_root \
+         || -e $candidate_a || -L $candidate_a \
+         || -e $candidate_b || -L $candidate_b ]]; then
+      mkdir -- "$failed_root"
+      if [[ -e $temporary_root || -L $temporary_root ]]; then
+        mv -T -- "$temporary_root" "$failed_root/temporary-root-entry"
+      fi
+      if [[ -e $candidate_a || -L $candidate_a ]]; then
+        mv -T -- "$candidate_a" "$failed_root/candidate-a"
+      fi
+      if [[ -e $candidate_b || -L $candidate_b ]]; then
+        mv -T -- "$candidate_b" "$failed_root/candidate-b"
+      fi
     fi
-    if [[ -d $artifact_temporary ]]; then
-      mv -- "$artifact_temporary" "$artifacts_root/.failed-$build_id-$$"
+    if [[ -e $artifact_temporary || -L $artifact_temporary ]]; then
+      mv -T -- "$artifact_temporary" "$failed_artifact"
     fi
   fi
 }
 trap on_exit EXIT
+mkdir -p "$build_a" "$build_b" "$candidate_a" "$candidate_b" \
+  "$overlay_a" "$overlay_b" "$artifact_temporary" "$log_dir"
 exec > >(tee "$log_file") 2>&1
 
 echo "CajunOS bootstrap libgcc"
@@ -1663,16 +1697,31 @@ fi
   dependencies.glibc.receipt_sha256 "$glibc_receipt_sha256" \
   dependencies.linux.receipt_sha256 "$linux_receipt_sha256"
 
-# Publish immutable state first, then advance tools/current atomically last.
-mv -- "$candidate_a" "$prefix_final"
-rm -rf -- "$candidate_b" "$overlay_a" "$overlay_b"
-mv -- "$temporary_root" "$build_final"
-mv -- "$artifact_temporary" "$artifact_final"
-"$script_path" --internal-python selector-transition \
-  "$tools_root" "$artifacts_root" "$gcc_build_id" "$build_id" >/dev/null
-
+# Validate managed roots and exact staging paths before irreversible publication.
 "$script_path" --internal-python validate-directories "$cajunos_root" \
   work work/toolchain tools artifacts logs sysroot "sysroot/$cohort_id"
+if [[ $candidate_a != "$tools_root/.tmp-$build_id-a-$$" \
+   || $candidate_b != "$tools_root/.tmp-$build_id-b-$$" \
+   || ! -d $candidate_a || -L $candidate_a \
+   || ! -d $candidate_b || -L $candidate_b \
+   || ! -d $temporary_root || -L $temporary_root \
+   || ! -d $artifact_temporary || -L $artifact_temporary \
+   || ! -f $artifact_temporary/receipt.json \
+   || -L $artifact_temporary/receipt.json \
+   || -e $prefix_final || -L $prefix_final \
+   || -e $build_final || -L $build_final \
+   || -e $artifact_final || -L $artifact_final ]]; then
+  echo "CajunOS publication paths changed after validation" >&2
+  exit 104
+fi
+
+# Publish immutable state first, then advance tools/current atomically last.
+mv -T -- "$candidate_a" "$prefix_final"
+rm -rf -- "$candidate_b" "$overlay_a" "$overlay_b"
+mv -T -- "$temporary_root" "$build_final"
+mv -T -- "$artifact_temporary" "$artifact_final"
+"$script_path" --internal-python selector-transition \
+  "$tools_root" "$artifacts_root" "$gcc_build_id" "$build_id" >/dev/null
 build_succeeded=1
 trap - EXIT
 echo "CAJUNOS_LIBGCC_BOOTSTRAP_OK build_id=$build_id"
