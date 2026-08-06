@@ -302,6 +302,69 @@ elif command == "compare-json":
         right = json.load(stream)
     if left != right:
         fail("JSON attestations differ")
+elif command == "gcc-header-contract":
+    if len(arguments) != 3:
+        fail(
+            "gcc-header-contract requires MAKEFILE TARGET_SYSROOT BUILD_SYSROOT"
+        )
+    makefile = Path(arguments[0])
+    target_sysroot = arguments[1]
+    build_sysroot = arguments[2]
+    if not makefile.is_absolute() or str(makefile) != os.path.normpath(makefile):
+        fail("unsafe generated GCC Makefile path")
+    metadata = makefile.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        fail("generated GCC Makefile is not a plain single-linked file")
+    for label, value in (
+        ("target sysroot", target_sysroot),
+        ("build sysroot", build_sysroot),
+    ):
+        if not value.startswith("/") or value != os.path.normpath(value):
+            fail(f"unsafe {label} for GCC header contract")
+    target = "__cajunos_print_gcc_header_contract"
+    recipe = (
+        f'{target}: ; @printf "%s\\n" '
+        '"NATIVE=$(NATIVE_SYSTEM_HEADER_DIR)" '
+        '"CROSS=$(CROSS_SYSTEM_HEADER_DIR)" '
+        '"SYSTEM=$(SYSTEM_HEADER_DIR)" '
+        '"BUILD=$(BUILD_SYSTEM_HEADER_DIR)" '
+        '"ROOT=$(TARGET_SYSTEM_ROOT)" '
+        '"SYSROOT_FLAGS=$(SYSROOT_CFLAGS_FOR_TARGET)" '
+        '"INHIBIT=$(inhibit_libc)"'
+    )
+    result = subprocess.run(
+        [
+            "/usr/bin/make",
+            "-s",
+            "-C",
+            str(makefile.parent),
+            "-f",
+            str(makefile),
+            "--no-print-directory",
+            "sysroot_headers_suffix=",
+            f"--eval=.PHONY: {target}",
+            f"--eval={recipe}",
+            target,
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TZ": "UTC"},
+    )
+    if result.returncode:
+        fail("could not evaluate generated GCC header contract")
+    expected_lines = [
+        "NATIVE=/usr/include",
+        f"CROSS={target_sysroot}/usr/include",
+        f"SYSTEM={build_sysroot}/usr/include",
+        f"BUILD={build_sysroot}/usr/include",
+        f"ROOT={target_sysroot}",
+        f"SYSROOT_FLAGS=--sysroot={build_sysroot}",
+        "INHIBIT=false",
+    ]
+    if result.stdout != "\n".join(expected_lines) + "\n":
+        fail("generated GCC header contract does not match sealed sysroots")
 elif command == "selector-state":
     if len(arguments) != 4:
         fail("selector-state requires TOOLS ARTIFACTS BASE BUILD")
@@ -950,9 +1013,9 @@ build_one() {
     echo "Locked GCC configured an unexpected target sysroot" >&2
     return 1
   }
-  grep -Fqx "BUILD_SYSTEM_HEADER_DIR = $glibc_snapshot/usr/include" \
-    "$build/gcc/Makefile" || {
-    echo "Locked GCC configured unexpected build headers" >&2
+  "$script_path" --internal-python gcc-header-contract \
+    "$build/gcc/Makefile" "$sysroot" "$glibc_snapshot" || {
+    echo "Locked GCC configured an unexpected header/sysroot contract" >&2
     return 1
   }
   make -C "$build" all-gcc

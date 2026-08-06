@@ -215,6 +215,91 @@ class LibgccBootstrapStageTests(unittest.TestCase):
         self.assertNotEqual(left_inventory["digest"], self.inventory(right)["digest"])
         self.assert_internal_fails("compare", left, right, output)
 
+    def test_gcc_header_contract_accepts_current_deferred_make_semantics(self) -> None:
+        target_sysroot = self.temporary_root / "target-sysroot"
+        build_sysroot = self.temporary_root / "sealed-build-sysroot"
+        # A non-default name proves the validator evaluates the supplied file.
+        makefile = self.temporary_root / "gcc" / "Generated.mk"
+        self.write_file(
+            makefile,
+            "\n".join(
+                [
+                    "NATIVE_SYSTEM_HEADER_DIR = /usr/include",
+                    "CROSS_SYSTEM_HEADER_DIR = "
+                    f"`echo {target_sysroot}$${{sysroot_headers_suffix}}"
+                    "$(NATIVE_SYSTEM_HEADER_DIR) | sed -e :a "
+                    "-e 's,[^/]*/\\.\\.\\/,,' -e ta`",
+                    "SYSTEM_HEADER_DIR = "
+                    f"`echo {build_sysroot}$${{sysroot_headers_suffix}}"
+                    "$(NATIVE_SYSTEM_HEADER_DIR) | sed -e :a "
+                    "-e 's,[^/]*/\\.\\.\\/,,' -e ta`",
+                    "BUILD_SYSTEM_HEADER_DIR = $(SYSTEM_HEADER_DIR)",
+                    f"TARGET_SYSTEM_ROOT = {target_sysroot}",
+                    f"SYSROOT_CFLAGS_FOR_TARGET = --sysroot={build_sysroot}",
+                    "inhibit_libc = false",
+                    "",
+                ]
+            ),
+        )
+        self.run_internal(
+            "gcc-header-contract", makefile, target_sysroot, build_sysroot
+        )
+
+        environment = os.environ.copy()
+        environment["sysroot_headers_suffix"] = "/host-leak"
+        result = subprocess.run(
+            [
+                str(INSTALLER),
+                "--internal-python",
+                "gcc-header-contract",
+                str(makefile),
+                str(target_sysroot),
+                str(build_sysroot),
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_gcc_header_contract_rejects_wrong_roots_or_host_headers(self) -> None:
+        target_sysroot = self.temporary_root / "target-sysroot"
+        build_sysroot = self.temporary_root / "sealed-build-sysroot"
+        baseline = {
+            "NATIVE_SYSTEM_HEADER_DIR": "/usr/include",
+            "CROSS_SYSTEM_HEADER_DIR": f"{target_sysroot}/usr/include",
+            "SYSTEM_HEADER_DIR": f"{build_sysroot}/usr/include",
+            "BUILD_SYSTEM_HEADER_DIR": f"{build_sysroot}/usr/include",
+            "TARGET_SYSTEM_ROOT": str(target_sysroot),
+            "SYSROOT_CFLAGS_FOR_TARGET": f"--sysroot={build_sysroot}",
+            "inhibit_libc": "false",
+        }
+        cases = {
+            "cross-host-leak": {"CROSS_SYSTEM_HEADER_DIR": "/usr/include"},
+            "system-host-leak": {"SYSTEM_HEADER_DIR": "/usr/include"},
+            "build-host-leak": {"BUILD_SYSTEM_HEADER_DIR": "/usr/include"},
+            "wrong-target-root": {"TARGET_SYSTEM_ROOT": "/wrong"},
+            "wrong-build-flags": {"SYSROOT_CFLAGS_FOR_TARGET": ""},
+            "inhibited-libc": {"inhibit_libc": "true"},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                values = {**baseline, **changes}
+                makefile = self.temporary_root / name / "Makefile"
+                self.write_file(
+                    makefile,
+                    "".join(f"{key} = {value}\n" for key, value in values.items()),
+                )
+                self.assert_internal_fails(
+                    "gcc-header-contract",
+                    makefile,
+                    target_sysroot,
+                    build_sysroot,
+                    message="does not match sealed sysroots",
+                )
+
     def test_derived_delta_is_stable_and_requires_exact_twelve_file_set(self) -> None:
         tools = self.temporary_root / "delta-tools"
         base = tools / "base"
