@@ -75,7 +75,8 @@ The planned bootstrap sequence is:
 3. Linux userspace headers into `sysroot/<cohort>/usr/include` through the
    active immutable snapshot.
 4. glibc headers and startup objects.
-5. GCC target runtime (`libgcc`).
+5. Static bootstrap GCC target runtime (`libgcc`) in a derived immutable tools
+   prefix.
 6. complete glibc.
 7. complete C/C++ cross compiler and runtime.
 8. base userland, kernel, init, bootloader, image, and clean-room boot tests.
@@ -122,3 +123,13 @@ The stage explicitly prevents host C++ header discovery and requires identical
 complete snapshot inventories, header-search and ELF probes, unchanged base
 content, and an exact receipt chain back through Linux, GCC, and Binutils. It
 does not publish a real or placeholder libc, GCC runtime, or dynamic loader.
+
+`scripts/build-libgcc-bootstrap.sh` consumes the sealed GCC compiler and the
+active glibc headers/startfiles snapshot without changing either one. It builds
+current GCC's target runtime twice in independent out-of-tree builds with
+shared libraries, threads, multilib, and gcov disabled. Publication makes an
+ordinary copy of the stage-one compiler prefix and overlays only upstream's
+static `libgcc`, unwind/gcov headers, and x86-64 target CRT helpers. The driver
+must relocate to the new prefix and resolve every runtime file there; the
+cohort sysroot must remain byte-for-byte unchanged. No `libgcc_s`, functional
+libc, dynamic loader, or profiling library is claimed at this milestone.

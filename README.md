@@ -31,6 +31,7 @@ CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make binutils-stage1
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make gcc-stage1
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make linux-headers
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make glibc-headers-startfiles
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make libgcc-bootstrap
 ```
 
 That environment variable is required only because this committed cohort
@@ -38,10 +39,12 @@ records anonymous Git transports after the GNU HTTPS endpoints returned HTTP
 429. It acknowledges the recorded transport risk; commit, tree, origin, and
 license validation remain mandatory.
 
-The GCC stage builds compiler proper only. The Linux stage installs the locked
-userspace API headers, and the following glibc bootstrap stage adds public libc
-headers plus `crt1.o`, `crti.o`, and `crtn.o` in a new immutable snapshot.
-Functional libc and GCC target runtime libraries remain deliberately absent.
+The first GCC stage builds compiler proper only. The Linux stage installs the
+locked userspace API headers, and the glibc bootstrap stage adds public libc
+headers plus `crt1.o`, `crti.o`, and `crtn.o` in a new immutable snapshot. The
+next stage derives an immutable compiler prefix containing static bootstrap
+`libgcc` and GCC's target CRT helpers. Functional libc, the dynamic loader,
+shared `libgcc`, threads, and profiling runtime remain deliberately absent.
 
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.
