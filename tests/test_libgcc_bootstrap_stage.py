@@ -300,6 +300,146 @@ class LibgccBootstrapStageTests(unittest.TestCase):
                     message="does not match sealed sysroots",
                 )
 
+    def test_libgcc_make_contract_accepts_current_included_make_semantics(self) -> None:
+        build = self.temporary_root / "build"
+        gcc_objdir = build / "gcc"
+        build_sysroot = self.temporary_root / "sealed-build-sysroot"
+        makefile = build / TARGET / "libgcc" / "Generated.mk"
+        self.write_file(gcc_objdir / "xgcc", b"fresh cross compiler\n", 0o755)
+        build_sysroot.mkdir()
+        self.write_file(gcc_objdir / "libgcc.mvars", "INHIBIT_LIBC_CFLAGS =\n")
+        self.write_file(
+            makefile,
+            "\n".join(
+                [
+                    "enable_shared = no",
+                    "enable_gcov = no",
+                    "thread_header = gthr-single.h",
+                    "MULTIDIRS =",
+                    "MULTISUBDIR =",
+                    "LIBGCC2_CFLAGS = -O2 $(INHIBIT_LIBC_CFLAGS)",
+                    "CRTSTUFF_CFLAGS = $(INHIBIT_LIBC_CFLAGS)",
+                    "CRTSTUFF_T_CFLAGS =",
+                    "EXTRA_PARTS = crtbegin.o crtbeginS.o crtbeginT.o "
+                    "crtend.o crtendS.o crtprec32.o crtprec64.o crtprec80.o "
+                    "crtfastmath.o",
+                    "gcc_objdir = ../../gcc",
+                    f"CC = {gcc_objdir}/xgcc -B{gcc_objdir}/ "
+                    f"--sysroot={build_sysroot}",
+                    "include ../../gcc/libgcc.mvars",
+                    "",
+                ]
+            ),
+        )
+        self.run_internal(
+            "libgcc-make-contract", makefile, gcc_objdir, build_sysroot
+        )
+
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "MAKEFLAGS": "--eval=$(error hostile MAKEFLAGS was imported)",
+                "MAKEFILES": "/does/not/exist",
+            }
+        )
+        result = subprocess.run(
+            [
+                str(INSTALLER),
+                "--internal-python",
+                "libgcc-make-contract",
+                str(makefile),
+                str(gcc_objdir),
+                str(build_sysroot),
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_libgcc_make_contract_rejects_unsafe_modes_and_compilers(self) -> None:
+        build = self.temporary_root / "negative-build"
+        gcc_objdir = build / "gcc"
+        build_sysroot = self.temporary_root / "sealed-build-sysroot"
+        self.write_file(gcc_objdir / "xgcc", b"fresh cross compiler\n", 0o755)
+        build_sysroot.mkdir()
+        self.write_file(gcc_objdir / "libgcc.mvars", "INHIBIT_LIBC_CFLAGS =\n")
+        baseline = {
+            "enable_shared": "no",
+            "enable_gcov": "no",
+            "thread_header": "gthr-single.h",
+            "MULTIDIRS": "",
+            "MULTISUBDIR": "",
+            "INHIBIT_LIBC_CFLAGS": "",
+            "LIBGCC2_CFLAGS": "-O2 $(INHIBIT_LIBC_CFLAGS)",
+            "CRTSTUFF_CFLAGS": "$(INHIBIT_LIBC_CFLAGS)",
+            "CRTSTUFF_T_CFLAGS": "",
+            "EXTRA_PARTS": (
+                "crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o "
+                "crtprec32.o crtprec64.o crtprec80.o crtfastmath.o"
+            ),
+            "gcc_objdir": str(gcc_objdir),
+            "CC": f"{gcc_objdir}/xgcc -B{gcc_objdir}/ --sysroot={build_sysroot}",
+        }
+        cases = {
+            "shared": {"enable_shared": "yes"},
+            "gcov": {"enable_gcov": "yes"},
+            "threads": {"thread_header": "gthr-posix.h"},
+            "multidirs": {"MULTIDIRS": ". 32"},
+            "multisubdir": {"MULTISUBDIR": "/32"},
+            "inhibit-variable": {"INHIBIT_LIBC_CFLAGS": "-Dinhibit_libc"},
+            "inhibit-libgcc-flags": {
+                "LIBGCC2_CFLAGS": "-O2 -Dinhibit_libc"
+            },
+            "inhibit-crt-flags": {"CRTSTUFF_CFLAGS": "-Dinhibit_libc"},
+            "wrong-extra-parts": {"EXTRA_PARTS": "crtbegin.o crtend.o"},
+            "wrong-objdir": {"gcc_objdir": "/wrong/gcc"},
+            "host-compiler": {
+                "CC": f"/usr/bin/gcc --sysroot={build_sysroot}"
+            },
+            "missing-sysroot": {"CC": f"{gcc_objdir}/xgcc -B{gcc_objdir}/"},
+            "wrong-sysroot": {
+                "CC": f"{gcc_objdir}/xgcc -B{gcc_objdir}/ --sysroot=/wrong"
+            },
+            "inhibit-command": {
+                "CC": f"{gcc_objdir}/xgcc -B{gcc_objdir}/ "
+                f"--sysroot={build_sysroot} -Dinhibit_libc"
+            },
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                values = {**baseline, **changes}
+                makefile = build / name / "Generated.mk"
+                self.write_file(
+                    makefile,
+                    "".join(f"{key} = {value}\n" for key, value in values.items()),
+                )
+                self.assert_internal_fails(
+                    "libgcc-make-contract",
+                    makefile,
+                    gcc_objdir,
+                    build_sysroot,
+                )
+
+        self.write_file(
+            gcc_objdir / "libgcc.mvars",
+            "INHIBIT_LIBC_CFLAGS = -Dinhibit_libc\n",
+        )
+        valid_makefile = build / "inhibited-mvars" / "Generated.mk"
+        self.write_file(
+            valid_makefile,
+            "".join(f"{key} = {value}\n" for key, value in baseline.items()),
+        )
+        self.assert_internal_fails(
+            "libgcc-make-contract",
+            valid_makefile,
+            gcc_objdir,
+            build_sysroot,
+            message="does not record functional-header mode",
+        )
+
     def test_derived_delta_is_stable_and_requires_exact_twelve_file_set(self) -> None:
         tools = self.temporary_root / "delta-tools"
         base = tools / "base"

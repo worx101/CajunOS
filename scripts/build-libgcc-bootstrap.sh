@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -365,6 +366,135 @@ elif command == "gcc-header-contract":
     ]
     if result.stdout != "\n".join(expected_lines) + "\n":
         fail("generated GCC header contract does not match sealed sysroots")
+elif command == "libgcc-make-contract":
+    if len(arguments) != 3:
+        fail(
+            "libgcc-make-contract requires MAKEFILE GCC_OBJDIR BUILD_SYSROOT"
+        )
+    makefile = Path(arguments[0])
+    gcc_objdir = arguments[1]
+    build_sysroot = arguments[2]
+    if not makefile.is_absolute() or str(makefile) != os.path.normpath(makefile):
+        fail("unsafe generated libgcc Makefile path")
+    metadata = makefile.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        fail("generated libgcc Makefile is not a plain single-linked file")
+    for label, value in (
+        ("GCC object directory", gcc_objdir),
+        ("build sysroot", build_sysroot),
+    ):
+        if not value.startswith("/") or value != os.path.normpath(value):
+            fail(f"unsafe {label} for libgcc Make contract")
+    gcc_directory = Path(gcc_objdir)
+    build_sysroot_directory = Path(build_sysroot)
+    if not stat.S_ISDIR(gcc_directory.lstat().st_mode):
+        fail("expected GCC object directory is not a real directory")
+    if not stat.S_ISDIR(build_sysroot_directory.lstat().st_mode):
+        fail("expected libgcc build sysroot is not a real directory")
+    xgcc = gcc_directory / "xgcc"
+    xgcc_metadata = xgcc.lstat()
+    if (
+        not stat.S_ISREG(xgcc_metadata.st_mode)
+        or xgcc_metadata.st_nlink != 1
+        or not (xgcc_metadata.st_mode & 0o111)
+    ):
+        fail("fresh cross compiler is not a plain executable file")
+    libgcc_mvars = gcc_directory / "libgcc.mvars"
+    mvars_metadata = libgcc_mvars.lstat()
+    if not stat.S_ISREG(mvars_metadata.st_mode) or mvars_metadata.st_nlink != 1:
+        fail("generated libgcc.mvars is not a plain single-linked file")
+    inhibit_assignments = [
+        line
+        for line in libgcc_mvars.read_text(encoding="utf-8").splitlines()
+        if re.match(r"^INHIBIT_LIBC_CFLAGS[ \t]*=", line)
+    ]
+    if len(inhibit_assignments) != 1 or not re.fullmatch(
+        r"INHIBIT_LIBC_CFLAGS[ \t]*=[ \t]*", inhibit_assignments[0]
+    ):
+        fail("generated libgcc.mvars does not record functional-header mode")
+    target = "__cajunos_print_libgcc_make_contract"
+    recipe = (
+        f'{target}: ; @printf "%s\\n" '
+        '"SHARED=$(strip $(enable_shared))" '
+        '"GCOV=$(strip $(enable_gcov))" '
+        '"THREAD=$(strip $(thread_header))" '
+        '"MULTIDIRS=$(strip $(MULTIDIRS))" '
+        '"MULTISUBDIR=$(strip $(MULTISUBDIR))" '
+        '"INHIBIT_FLAGS=$(strip $(INHIBIT_LIBC_CFLAGS))" '
+        '"LIBGCC_FLAGS=$(strip $(LIBGCC2_CFLAGS))" '
+        '"CRT_FLAGS=$(strip $(CRTSTUFF_CFLAGS) $(CRTSTUFF_T_CFLAGS))" '
+        '"EXTRA_PARTS=$(strip $(EXTRA_PARTS))" '
+        '"GCC_OBJDIR=$(abspath $(gcc_objdir))" '
+        '"CC=$(strip $(CC))"'
+    )
+    result = subprocess.run(
+        [
+            "/usr/bin/make",
+            "-s",
+            "-C",
+            str(makefile.parent),
+            "-f",
+            str(makefile),
+            "--no-print-directory",
+            f"--eval=.PHONY: {target}",
+            f"--eval={recipe}",
+            target,
+        ],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TZ": "UTC"},
+    )
+    if result.returncode or result.stderr:
+        fail("could not cleanly evaluate generated libgcc Make contract")
+    lines = result.stdout.splitlines()
+    if len(lines) != 11 or any("=" not in line for line in lines):
+        fail("generated libgcc Make contract has malformed output")
+    values = dict(line.split("=", 1) for line in lines)
+    expected_values = {
+        "SHARED": "no",
+        "GCOV": "no",
+        "THREAD": "gthr-single.h",
+        "MULTIDIRS": "",
+        "MULTISUBDIR": "",
+        "INHIBIT_FLAGS": "",
+        "EXTRA_PARTS": (
+            "crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o "
+            "crtprec32.o crtprec64.o crtprec80.o crtfastmath.o"
+        ),
+        "GCC_OBJDIR": gcc_objdir,
+    }
+    if {key: values.get(key) for key in expected_values} != expected_values:
+        fail("generated libgcc Make contract has unsafe build modes")
+    try:
+        cc_tokens = shlex.split(values["CC"])
+    except (KeyError, ValueError):
+        fail("generated libgcc Make contract has an invalid compiler command")
+    if not cc_tokens:
+        fail("generated libgcc Make contract has an empty compiler command")
+
+    def command_path(value: str) -> str:
+        path = Path(value)
+        if not path.is_absolute():
+            path = makefile.parent / path
+        return os.path.normpath(path)
+
+    if command_path(cc_tokens[0]) != f"{gcc_objdir}/xgcc":
+        fail("target libgcc is not configured with the fresh cross compiler")
+    b_prefixes = [command_path(token[2:]) for token in cc_tokens if token.startswith("-B")]
+    if gcc_objdir not in b_prefixes:
+        fail("target libgcc compiler lacks its fresh GCC search prefix")
+    sysroot_tokens = [token for token in cc_tokens if token.startswith("--sysroot=")]
+    if sysroot_tokens != [f"--sysroot={build_sysroot}"]:
+        fail("target libgcc compiler does not use the sealed build sysroot")
+    if any("inhibit_libc" in token for token in cc_tokens):
+        fail("target libgcc compiler unexpectedly inhibits libc")
+    if (
+        "inhibit_libc" in values["LIBGCC_FLAGS"]
+        or "inhibit_libc" in values["CRT_FLAGS"]
+    ):
+        fail("target libgcc compile flags unexpectedly inhibit libc")
 elif command == "selector-state":
     if len(arguments) != 4:
         fail("selector-state requires TOOLS ARTIFACTS BASE BUILD")
@@ -1025,11 +1155,9 @@ build_one() {
     echo "Target libgcc configuration did not produce a Makefile" >&2
     return 1
   }
-  grep -Fqx 'enable_shared = no' "$libgcc_build/Makefile"
-  grep -Fqx 'enable_gcov = no' "$libgcc_build/Makefile"
-  grep -Eq '^inhibit_libc[[:space:]]*=[[:space:]]*(false|no)[[:space:]]*$' \
-    "$libgcc_build/Makefile" || {
-    echo "Target libgcc unexpectedly configured inhibit_libc" >&2
+  "$script_path" --internal-python libgcc-make-contract \
+    "$libgcc_build/Makefile" "$build/gcc" "$glibc_snapshot" || {
+    echo "Target libgcc configured an unexpected Make contract" >&2
     return 1
   }
   make -C "$libgcc_build" \
