@@ -29,6 +29,7 @@ make fetch
 make validate
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make binutils-stage1
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make gcc-stage1
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make linux-headers
 ```
 
 That environment variable is required only because this committed cohort
@@ -36,8 +37,9 @@ records anonymous Git transports after the GNU HTTPS endpoints returned HTTP
 429. It acknowledges the recorded transport risk; commit, tree, origin, and
 license validation remain mandatory.
 
-The GCC stage builds compiler proper only. Target runtime libraries, libc,
-startup objects, and Linux headers are intentionally deferred to later stages.
+The GCC stage builds compiler proper only. The next stage installs the locked
+Linux userspace API headers into an immutable cohort sysroot snapshot. Target
+runtime libraries, libc, and startup objects remain deliberately absent.
 
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.

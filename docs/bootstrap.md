@@ -31,6 +31,12 @@ input-versioned; successful validation atomically advances `tools/current`.
 Builds hold the same source-operation lock used by synchronization for their
 entire validation, compilation, receipt, and publication lifetime.
 
+Sysroot changes are immutable snapshots beneath
+`sysroot/<cohort>/snapshots/<build-id>`. The relative `current` link selects
+the active snapshot, while `sysroot/<cohort>/usr` resolves through
+`current/usr`. A stage publishes and validates its snapshot before atomically
+advancing `current`; an idempotent rerun never rewinds a later snapshot.
+
 ## Source acquisition
 
 `scripts/fetch.py update-lock` is the only operation that advances moving
@@ -66,7 +72,8 @@ The planned bootstrap sequence is:
 
 1. Binutils cross assembler/linker into `tools/`.
 2. Minimal GCC C cross compiler without a target libc.
-3. Linux userspace headers into `sysroot/usr/include`.
+3. Linux userspace headers into `sysroot/<cohort>/usr/include` through the
+   active immutable snapshot.
 4. glibc headers and startup objects.
 5. GCC target runtime (`libgcc`).
 6. complete glibc.
@@ -99,3 +106,10 @@ compiler and then requires a system-header directory to exist. This headerless
 stage disables `fixincludes` explicitly; it has no target headers to repair,
 and the real CajunOS cohort sysroot remains empty until the Linux UAPI headers
 stage.
+
+`scripts/install-linux-headers.sh` runs the locked kernel's `headers_install`
+target twice in independent out-of-tree builds and requires identical paths,
+types, modes, content hashes, and symlink targets. It then checks the exported
+x86-64 UAPI with the sealed stage-one cross compiler, publishes an immutable
+cohort snapshot, and records the Linux, GCC, and nested Binutils provenance in
+its receipt.

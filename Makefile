@@ -1,7 +1,7 @@
 CAJUNOS_ROOT ?= /srv/cajunos
 PYTHON ?= python3
 
-.PHONY: fetch lock validate binutils-stage1 gcc-stage1
+.PHONY: fetch lock validate binutils-stage1 gcc-stage1 linux-headers
 
 fetch:
 	$(PYTHON) scripts/fetch.py sync --root "$(CAJUNOS_ROOT)"
@@ -17,3 +17,6 @@ binutils-stage1:
 
 gcc-stage1:
 	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-gcc-stage1.sh
+
+linux-headers:
+	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/install-linux-headers.sh
