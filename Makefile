@@ -1,7 +1,7 @@
 CAJUNOS_ROOT ?= /srv/cajunos
 PYTHON ?= python3
 
-.PHONY: fetch lock validate binutils-stage1
+.PHONY: fetch lock validate binutils-stage1 gcc-stage1
 
 fetch:
 	$(PYTHON) scripts/fetch.py sync --root "$(CAJUNOS_ROOT)"
@@ -14,3 +14,6 @@ validate:
 
 binutils-stage1:
 	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-binutils-stage1.sh
+
+gcc-stage1:
+	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-gcc-stage1.sh

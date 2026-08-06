@@ -86,3 +86,11 @@ them by assembling, linking, and executing a freestanding x86-64 ELF probe. It
 builds from a clean committed orchestration checkout, stages installation under
 the workspace, and publishes only after all checks pass. It neither installs
 target libraries nor writes into the Debian root filesystem.
+
+`scripts/build-gcc-stage1.sh` consumes an exact, fully revalidated immutable
+Binutils receipt and builds only GCC's `all-gcc`/`install-gcc` targets. It binds
+the compiler to that assembler/linker, an empty cohort sysroot, the
+`x86-64-v2`/generic target baseline, and a C-only single-threaded bootstrap
+contract. Publication requires target/sysroot/default-option checks, proof that
+host include paths did not leak, a freestanding compile/link/run probe, and
+confirmation that no target runtime or startup objects were installed.
