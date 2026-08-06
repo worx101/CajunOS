@@ -290,6 +290,7 @@ configure_args=(
   "--disable-nls"
   "--disable-werror"
   "--disable-lto"
+  "--disable-fixincludes"
   "--without-headers"
   "--without-isl"
   "--without-zstd"
@@ -417,6 +418,7 @@ if (
     or receipt.get("prefix") != prefix_value
     or receipt.get("sysroot") != sysroot
     or receipt.get("sysroot_contract") != "empty-at-build"
+    or receipt.get("target_contract", {}).get("fixincludes") != "disabled-for-headerless-stage"
     or receipt.get("orchestration_commit") != orchestration_commit
     or receipt.get("orchestration_tree") != orchestration_tree
     or receipt.get("recipe_sha256") != recipe_sha256
@@ -488,6 +490,18 @@ export PATH="$binutils_prefix/bin:/usr/bin:/bin"
     --prefix="$prefix_final" \
     "${configure_args[@]}"
 )
+
+make -j1 -C "$build_temporary" configure-gcc
+if ! grep -Eq '^STMP_FIXINC[[:space:]]*=[[:space:]]*$' \
+  "$build_temporary/gcc/Makefile"; then
+  echo "Locked GCC did not honor --disable-fixincludes" >&2
+  exit 64
+fi
+if ! grep -Fqx "TARGET_SYSTEM_ROOT = $sysroot" \
+  "$build_temporary/gcc/Makefile"; then
+  echo "Locked GCC configured an unexpected target sysroot" >&2
+  exit 65
+fi
 
 make -C "$build_temporary" all-gcc
 make -j1 -C "$build_temporary" DESTDIR="$stage_root" install-gcc
@@ -587,7 +601,6 @@ if [[ -n $(find "$sysroot" -mindepth 1 -print -quit) ]]; then
   echo "GCC stage one unexpectedly modified the cohort sysroot" >&2
   exit 62
 fi
-
 # Close the dependency time-of-check/time-of-use window before attesting to
 # the GCC output. Both the receipt bytes and the complete immutable prefix must
 # still be identical to the inputs used to derive this build ID.
@@ -805,6 +818,7 @@ receipt = {
         "glibc_series": glibc_series,
         "runtime": "intentionally absent",
         "threads": "single",
+        "fixincludes": "disabled-for-headerless-stage",
     },
     "sysroot": sysroot,
     "sysroot_contract": "empty-at-build",

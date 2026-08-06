@@ -94,3 +94,8 @@ the compiler to that assembler/linker, an empty cohort sysroot, the
 contract. Publication requires target/sysroot/default-option checks, proof that
 host include paths did not leak, a freestanding compile/link/run probe, and
 confirmation that no target runtime or startup objects were installed.
+Current GCC trunk tries to run `fixincludes` even for a `--without-headers`
+compiler and then requires a system-header directory to exist. This headerless
+stage disables `fixincludes` explicitly; it has no target headers to repair,
+and the real CajunOS cohort sysroot remains empty until the Linux UAPI headers
+stage.
