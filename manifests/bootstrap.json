@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "selection": "tip-of-branch-at-fetch-time",
+  "components": [
+    {
+      "name": "binutils",
+      "stage": "bootstrap",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://sourceware.org/git/binutils-gdb.git",
+        "git://sourceware.org/git/binutils-gdb.git"
+      ],
+      "project": "https://sourceware.org/binutils/",
+      "license_files": [
+        "COPYING",
+        "COPYING3",
+        "COPYING.LIB",
+        "COPYING3.LIB"
+      ]
+    },
+    {
+      "name": "gcc",
+      "stage": "bootstrap",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://gcc.gnu.org/git/gcc.git",
+        "git://gcc.gnu.org/git/gcc.git"
+      ],
+      "project": "https://gcc.gnu.org/",
+      "license_files": [
+        "COPYING",
+        "COPYING3",
+        "COPYING.LIB",
+        "COPYING3.LIB",
+        "COPYING.RUNTIME"
+      ]
+    },
+    {
+      "name": "glibc",
+      "stage": "bootstrap",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://sourceware.org/git/glibc.git",
+        "git://sourceware.org/git/glibc.git"
+      ],
+      "project": "https://sourceware.org/glibc/",
+      "license_files": [
+        "COPYING.LESSERv2",
+        "COPYING.LIB",
+        "COPYINGv2",
+        "COPYINGv3",
+        "LICENSES"
+      ]
+    },
+    {
+      "name": "linux",
+      "stage": "bootstrap",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+      ],
+      "project": "https://www.kernel.org/",
+      "license_files": [
+        "COPYING",
+        "LICENSES"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+# CajunOS bootstrap
+
+CajunOS starts with current development branch tips from each component's
+canonical repository. A moving upstream branch chooses inputs; the generated
+lockfile turns one integration attempt into an exact, reviewable source set.
+
+This is not an LFS package list or source bundle. Debian is only the forge host.
+Its compiler and development packages are bootstrap tools and are not copied
+into the CajunOS target filesystem.
+
+## Workspace contract
+
+The orchestration expects the following paths beneath `CAJUNOS_ROOT`, which
+defaults to `/srv/cajunos`:
+
+```text
+project/    CajunOS orchestration checkout
+upstream/   canonical upstream checkouts
+work/       disposable out-of-tree build directories
+sysroot/    staged CajunOS root filesystem
+tools/      immutable toolchain prefixes plus the current symlink
+cache/      compiler and download caches
+artifacts/  build products and machine-readable receipts
+logs/       fetch and build logs
+```
+
+Source trees and build directories stay separate. A build step refuses a
+source tree whose commit, tree, origin, or declared licenses differ from the
+committed lockfile. Sysroots are cohort-versioned and tool prefixes are
+input-versioned; successful validation atomically advances `tools/current`.
+Builds hold the same source-operation lock used by synchronization for their
+entire validation, compilation, receipt, and publication lifetime.
+
+## Source acquisition
+
+`scripts/fetch.py update-lock` is the only operation that advances moving
+upstream branches. `scripts/fetch.py sync` instead consumes the committed lock
+and never selects a newer revision. Both perform one component at a time and:
+
+1. accepts only repository URLs declared in the manifest;
+2. refuses dirty or structurally unexpected existing checkouts;
+3. fetches either an explicit upstream branch ref for a lock update or the
+   exact committed object ID for a locked synchronization;
+4. uses a temporary sibling directory for a new clone and renames it only after
+   Git connectivity verification succeeds; and
+5. atomically writes commit, tree, timestamp, subject, branch, and actual remote
+   into `locks/bootstrap.lock.json`.
+
+Lock updates use HTTPS by default. The official anonymous Git transports
+documented by GNU projects require the explicit `--allow-unauthenticated`
+option because Sourceware can rate-limit HTTPS. The lock records whether each
+selection used an authenticated transport; Git object consistency alone is not
+presented as source authenticity. Building a cohort with such a lock also
+requires `CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1`; this is an explicit risk
+acknowledgement and does not disable any content or provenance validation. A
+locked synchronization may use another declared repository only when its
+transport is at least as authenticated as the repository recorded in the lock.
+
+## Toolchain stages
+
+The initial target tuple is `x86_64-cajunos-linux-gnu`. Target binaries use the
+`x86-64-v2` baseline; the forge may use its host CPU to build them but target
+code must not use `-march=native`.
+
+The planned bootstrap sequence is:
+
+1. Binutils cross assembler/linker into `tools/`.
+2. Minimal GCC C cross compiler without a target libc.
+3. Linux userspace headers into `sysroot/usr/include`.
+4. glibc headers and startup objects.
+5. GCC target runtime (`libgcc`).
+6. complete glibc.
+7. complete C/C++ cross compiler and runtime.
+8. base userland, kernel, init, bootloader, image, and clean-room boot tests.
+
+Each stage gets a unique log, immutable build ID, preserved license bundle,
+a recursive inventory of installed files, symlinks, directories, modes, and
+hashes, plus a machine-readable receipt. Reaching a chroot is
+not a release criterion: the output must boot independently in a separate QEMU
+VM with no Debian builder disk attached.
+
+## Current milestone
+
+`scripts/build-binutils-stage1.sh` builds only the first cross-tools and verifies
+them by assembling, linking, and executing a freestanding x86-64 ELF probe. It
+builds from a clean committed orchestration checkout, stages installation under
+the workspace, and publishes only after all checks pass. It neither installs
+target libraries nor writes into the Debian root filesystem.

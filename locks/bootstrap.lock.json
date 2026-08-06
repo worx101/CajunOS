@@ -1,0 +1,67 @@
+{
+  "components": [
+    {
+      "canonical_repository": "https://sourceware.org/git/binutils-gdb.git",
+      "commit": "f94273aeb37908c32aa26530ff56e862f0060daf",
+      "commit_time": "2026-08-06T14:37:41+08:00",
+      "name": "binutils",
+      "ref": "refs/heads/master",
+      "repository": "git://sourceware.org/git/binutils-gdb.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "readelf: Don't dump GOT section after seeing error",
+      "transport_authenticated": false,
+      "tree": "dbd8b6e4e83ec1c04e2785d9c5c1c29c3ad877ed",
+      "vcs": "git"
+    },
+    {
+      "canonical_repository": "https://gcc.gnu.org/git/gcc.git",
+      "commit": "aa356161379c0df6b47dabf69bff51b6a0b5cab7",
+      "commit_time": "2026-08-06T06:26:42-04:00",
+      "name": "gcc",
+      "ref": "refs/heads/master",
+      "repository": "git://gcc.gnu.org/git/gcc.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "match: Combine several patterns into fors.",
+      "transport_authenticated": false,
+      "tree": "3c7298e3a1b3678815e59c1a29b395be36bc838e",
+      "vcs": "git"
+    },
+    {
+      "canonical_repository": "https://sourceware.org/git/glibc.git",
+      "commit": "97f74c6781184a807faa3c0c02f6c5822a98b731",
+      "commit_time": "2026-08-06T12:02:00+02:00",
+      "name": "glibc",
+      "ref": "refs/heads/master",
+      "repository": "git://sourceware.org/git/glibc.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "elf: Improve diagnostics for static TLS exhaustion",
+      "transport_authenticated": false,
+      "tree": "d413e0e451f2f311d93af5b5b578bfd9b4523f3f",
+      "vcs": "git"
+    },
+    {
+      "canonical_repository": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+      "commit": "0d839570765118029aa8bf4a95444c6a11aacf85",
+      "commit_time": "2026-08-05T08:18:03-07:00",
+      "name": "linux",
+      "ref": "refs/heads/master",
+      "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "Merge tag 'soc-fixes-7.2-2' of git://git.kernel.org/pub/scm/linux/kernel/git/soc/soc",
+      "transport_authenticated": true,
+      "tree": "955b6f332700d6ef30f08373dbf015f55690a5fd",
+      "vcs": "git"
+    }
+  ],
+  "generated_at": "2026-08-06T10:33:48.628182+00:00",
+  "manifest": "manifests/bootstrap.json",
+  "manifest_sha256": "sha256:6b685eb7bd078f3eea61d6bf876fc79a3c2b3e0910cbc91a73431ec3759dbffa",
+  "schema": 1,
+  "selection": "tip-of-branch-at-fetch-time",
+  "source_authentication": "contains-unauthenticated-transports",
+  "source_set_digest": "sha256:db11b6b9cf79778da33af3ad95f2347b103b17e7b782b8cc4fb0b0e62ac96fe1"
+}

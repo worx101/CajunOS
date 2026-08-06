@@ -10,4 +10,32 @@ CajunOS is a just-for-fun, experimental Linux system assembled directly from ups
 - Patch and adapt upstream code when integration requires it.
 - Preserve source provenance, upstream licenses, local patches, and build logs.
 
-> Status: planning. CajunOS is an experiment and is not ready for production use.
+## Bootstrap
+
+The first milestone builds an `x86_64-cajunos-linux-gnu` cross-toolchain on the
+dedicated CajunOS forge. Component selection lives in
+[`manifests/bootstrap.json`](manifests/bootstrap.json), while
+[`locks/bootstrap.lock.json`](locks/bootstrap.lock.json) records the exact
+upstream commits used by a build.
+
+The committed bootstrap cohort records that GNU repository HTTPS returned
+HTTP 429 during selection, so Binutils, GCC, and glibc used their projects'
+declared anonymous Git transports. That exception is explicit in the lock;
+future lock updates prefer authenticated HTTPS and require an opt-in before
+falling back.
+
+```sh
+make fetch
+make validate
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make binutils-stage1
+```
+
+That environment variable is required only because this committed cohort
+records anonymous Git transports after the GNU HTTPS endpoints returned HTTP
+429. It acknowledges the recorded transport risk; commit, tree, origin, and
+license validation remain mandatory.
+
+See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
+workspace contract, and verification rules.
+
+> Status: bootstrap in progress. CajunOS is an experiment and is not ready for production use.
