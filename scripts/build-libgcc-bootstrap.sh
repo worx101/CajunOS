@@ -150,6 +150,20 @@ def runtime_lookup_names() -> tuple[str, ...]:
     )
 
 
+def require_semantic_path(reported: str, expected: Path, label: str) -> None:
+    try:
+        reported_real = Path(reported).resolve(strict=True)
+        expected_real = expected.resolve(strict=True)
+    except (OSError, RuntimeError):
+        fail(f"{label} uses an invalid path: {reported}")
+    if (
+        not os.path.isabs(reported)
+        or os.path.normpath(reported) != str(expected)
+        or reported_real != expected_real
+    ):
+        fail(f"{label} escapes its expected prefix: {reported}")
+
+
 def validate_runtime_lookups(runtime_root: Path, lookup_path: Path) -> None:
     if (
         not runtime_root.is_absolute()
@@ -191,18 +205,80 @@ def validate_runtime_lookups(runtime_root: Path, lookup_path: Path) -> None:
             or stat.S_IMODE(metadata.st_mode) != 0o644
         ):
             fail(f"expected GCC runtime lookup is not a plain mode-0644 file: {name}")
-        resolved = values[name]
-        try:
-            resolved_real = Path(resolved).resolve(strict=True)
-            expected_real = expected.resolve(strict=True)
-        except (FileNotFoundError, RuntimeError):
-            fail(f"derived GCC resolved {name} through an invalid path: {resolved}")
-        if (
-            not os.path.isabs(resolved)
-            or os.path.normpath(resolved) != str(expected)
-            or resolved_real != expected_real
-        ):
-            fail(f"derived GCC resolved {name} outside its runtime prefix: {resolved}")
+        require_semantic_path(
+            values[name], expected, f"derived GCC lookup for {name}"
+        )
+
+
+def validate_libgcc_link_map(
+    map_path: Path, runtime_archive: Path, members_path: Path
+) -> None:
+    if (
+        not runtime_archive.is_absolute()
+        or str(runtime_archive) != os.path.normpath(runtime_archive)
+    ):
+        fail("unsafe runtime archive for link-map contract")
+    try:
+        archive_metadata = runtime_archive.lstat()
+    except FileNotFoundError:
+        fail("link-map runtime archive does not exist")
+    if (
+        not stat.S_ISREG(archive_metadata.st_mode)
+        or archive_metadata.st_nlink != 1
+        or stat.S_IMODE(archive_metadata.st_mode) != 0o644
+    ):
+        fail("link-map runtime archive is not a plain mode-0644 file")
+    try:
+        map_metadata = map_path.lstat()
+    except FileNotFoundError:
+        fail("link map does not exist")
+    if (
+        not stat.S_ISREG(map_metadata.st_mode)
+        or map_metadata.st_nlink != 1
+        or stat.S_IMODE(map_metadata.st_mode) != 0o644
+    ):
+        fail("link map is not a plain mode-0644 single-linked file")
+    try:
+        members_metadata = members_path.lstat()
+    except FileNotFoundError:
+        fail("libgcc member attestation does not exist")
+    if (
+        not stat.S_ISREG(members_metadata.st_mode)
+        or members_metadata.st_nlink != 1
+        or stat.S_IMODE(members_metadata.st_mode) != 0o644
+    ):
+        fail("libgcc member attestation is not a plain mode-0644 single-linked file")
+    archive_members = members_path.read_text(encoding="utf-8").splitlines()
+    if not archive_members:
+        fail("libgcc member attestation is empty")
+    archive_member_set = set(archive_members)
+    contents = map_path.read_text(encoding="utf-8")
+    loads = [
+        line.removeprefix("LOAD ").strip()
+        for line in contents.splitlines()
+        if line.startswith("LOAD ") and "libgcc.a" in line
+    ]
+    if len(loads) != 1:
+        fail("link map does not contain exactly one libgcc archive load")
+    require_semantic_path(loads[0], runtime_archive, "link-map libgcc load")
+    reference_pattern = re.compile(
+        r"(?<!\S)(?P<path>/[^\s()]+/libgcc\.a)"
+        r"(?:\((?P<member>[^()\s]+)\))?(?=\s|$)"
+    )
+    archive_references = list(reference_pattern.finditer(contents))
+    if not archive_references:
+        fail("link map does not name the derived libgcc archive")
+    if contents.count("libgcc.a") != len(archive_references):
+        fail("link map contains an unparseable libgcc archive reference")
+    if not any(match.group("member") for match in archive_references):
+        fail("link map does not name a linked libgcc archive member")
+    for match in archive_references:
+        require_semantic_path(
+            match.group("path"), runtime_archive, "link-map libgcc reference"
+        )
+        member = match.group("member")
+        if member is not None and member not in archive_member_set:
+            fail(f"link map names an absent libgcc archive member: {member}")
 
 
 def derive_delta(
@@ -368,6 +444,12 @@ elif command == "runtime-lookups-contract":
     if len(arguments) != 2:
         fail("runtime-lookups-contract requires RUNTIME_ROOT LOOKUPS")
     validate_runtime_lookups(Path(arguments[0]), Path(arguments[1]))
+elif command == "link-map-contract":
+    if len(arguments) != 3:
+        fail("link-map-contract requires MAP RUNTIME_ARCHIVE MEMBERS")
+    validate_libgcc_link_map(
+        Path(arguments[0]), Path(arguments[1]), Path(arguments[2])
+    )
 elif command == "compare-json":
     if len(arguments) != 2:
         fail("compare-json requires LEFT RIGHT")
@@ -1443,15 +1525,9 @@ if grep -Eq 'INTERP|DYNAMIC' "$probe_dir/start.readelf-l"; then
   echo "Freestanding libgcc probe unexpectedly requires a loader" >&2
   exit 96
 fi
-grep -F "$runtime_dir/libgcc.a" "$probe_dir/start.map" >/dev/null || {
-  echo "Link map does not name the derived libgcc archive" >&2
-  exit 97
-}
-if grep -F "$gcc_prefix/lib/gcc/$target/$gcc_version/libgcc.a" \
-  "$probe_dir/start.map"; then
-  echo "Link map leaked the sealed headerless compiler prefix" >&2
-  exit 98
-fi
+"$script_path" --internal-python link-map-contract \
+  "$probe_dir/start.map" "$runtime_dir/libgcc.a" \
+  "$probe_dir/libgcc.members" || exit 97
 "$probe_dir/start"
 
 "$script_path" --internal-python dependency-inventory \

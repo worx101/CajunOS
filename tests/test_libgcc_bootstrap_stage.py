@@ -163,6 +163,29 @@ class LibgccBootstrapStageTests(unittest.TestCase):
         lookups.chmod(0o644)
         return candidate, runtime, lookups
 
+    def link_map_fixture(self) -> tuple[Path, Path, Path, Path]:
+        candidate, runtime, _ = self.runtime_lookup_fixture()
+        archive = runtime / "libgcc.a"
+        reported = candidate / "bin/.." / RUNTIME_ROOT / "libgcc.a"
+        link_map = self.temporary_root / "start.map"
+        link_map.write_text(
+            "\n".join(
+                [
+                    f"{reported}(_udivdi3.o)",
+                    "LOAD /tmp/cajunos-probe.o",
+                    f"LOAD {reported}",
+                    f" .text 0x0000000000401000 {reported}(_udivdi3.o)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        link_map.chmod(0o644)
+        members = self.temporary_root / "libgcc.members"
+        members.write_text("_udivdi3.o\n", encoding="utf-8")
+        members.chmod(0o644)
+        return candidate, archive, link_map, members
+
     def test_build_id_is_stable_order_independent_and_sensitive(self) -> None:
         material = {
             "source_set_digest": "sha256:source",
@@ -273,7 +296,7 @@ class LibgccBootstrapStageTests(unittest.TestCase):
             "runtime-lookups-contract",
             runtime,
             lookups,
-            message="outside its runtime prefix",
+            message="escapes its expected prefix",
         )
 
         lines = original.splitlines()
@@ -305,7 +328,7 @@ class LibgccBootstrapStageTests(unittest.TestCase):
             "runtime-lookups-contract",
             runtime,
             lookups,
-            message="outside its runtime prefix",
+            message="escapes its expected prefix",
         )
 
     def test_runtime_lookup_contract_rejects_non_plain_runtime_files(self) -> None:
@@ -323,6 +346,169 @@ class LibgccBootstrapStageTests(unittest.TestCase):
             runtime,
             lookups,
             message="is absent",
+        )
+
+    def test_link_map_contract_accepts_relocated_archive_paths(self) -> None:
+        _, archive, link_map, members = self.link_map_fixture()
+        self.run_internal("link-map-contract", link_map, archive, members)
+
+        direct = link_map.read_text(encoding="utf-8").replace(
+            str(archive.parent.parent.parent.parent.parent / "bin/.." / RUNTIME_ROOT),
+            str(archive.parent),
+        )
+        link_map.write_text(direct, encoding="utf-8")
+        self.run_internal("link-map-contract", link_map, archive, members)
+
+    def test_link_map_contract_rejects_external_or_additional_archives(self) -> None:
+        _, archive, link_map, members = self.link_map_fixture()
+        external = self.temporary_root / "tools/gcc-stage1-base" / RUNTIME_ROOT / "libgcc.a"
+        self.write_file(external, "external archive\n")
+        contents = link_map.read_text(encoding="utf-8")
+        reported = next(
+            line.removeprefix("LOAD ")
+            for line in contents.splitlines()
+            if line.startswith("LOAD ") and "libgcc.a" in line
+        )
+
+        link_map.write_text(contents.replace(reported, str(external)), encoding="utf-8")
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="escapes its expected prefix",
+        )
+
+        link_map.write_text(
+            contents + f"LOAD {external}\n{external}(external.o)\n",
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="exactly one libgcc archive load",
+        )
+
+        link_map.write_text(
+            contents + f"{external}(external.o)\n",
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="escapes its expected prefix",
+        )
+
+        link_map.write_text(contents + "../libgcc.a(relative.o)\n", encoding="utf-8")
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="unparseable libgcc archive reference",
+        )
+
+    def test_link_map_contract_rejects_missing_load_and_symlink_escape(self) -> None:
+        candidate, archive, link_map, members = self.link_map_fixture()
+        contents = link_map.read_text(encoding="utf-8")
+        link_map.write_text(
+            "\n".join(
+                line
+                for line in contents.splitlines()
+                if not (line.startswith("LOAD ") and "libgcc.a" in line)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="exactly one libgcc archive load",
+        )
+
+        reported = next(
+            line.removeprefix("LOAD ")
+            for line in contents.splitlines()
+            if line.startswith("LOAD ") and "libgcc.a" in line
+        )
+        link_map.write_text(f"LOAD {reported}\n", encoding="utf-8")
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="does not name a linked libgcc archive member",
+        )
+
+        link_map.write_text(contents, encoding="utf-8")
+        (candidate / "bin").rmdir()
+        escaped = self.temporary_root / "escaped-map/bin-target"
+        escaped.mkdir(parents=True)
+        self.write_file(escaped.parent / RUNTIME_ROOT / "libgcc.a", "escaped archive\n")
+        (candidate / "bin").symlink_to(escaped)
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="escapes its expected prefix",
+        )
+
+    def test_link_map_contract_rejects_malformed_map_or_archive_files(self) -> None:
+        _, archive, link_map, members = self.link_map_fixture()
+        link_map.chmod(0o600)
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="not a plain mode-0644 single-linked file",
+        )
+
+        link_map.chmod(0o644)
+        alias = self.temporary_root / "start-map-hardlink"
+        os.link(link_map, alias)
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="not a plain mode-0644 single-linked file",
+        )
+        alias.unlink()
+
+        members.write_text("other-member.o\n", encoding="utf-8")
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="names an absent libgcc archive member",
+        )
+        members.write_text("_udivdi3.o\n", encoding="utf-8")
+        members.chmod(0o600)
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="member attestation is not a plain mode-0644 single-linked file",
+        )
+        members.chmod(0o644)
+
+        archive.chmod(0o600)
+        self.assert_internal_fails(
+            "link-map-contract",
+            link_map,
+            archive,
+            members,
+            message="runtime archive is not a plain mode-0644 file",
         )
 
     def test_gcc_header_contract_accepts_current_deferred_make_semantics(self) -> None:
