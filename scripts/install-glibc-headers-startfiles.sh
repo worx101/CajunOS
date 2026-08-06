@@ -1157,6 +1157,7 @@ configure_and_stage() {
   local build_dir=$1
   local candidate=$2
   local candidate_cc="$cross_gcc --sysroot=$candidate"
+  local configured_cc="$candidate_cc -B$binutils_prefix/bin/"
   [[ $("$cross_gcc" --sysroot="$candidate" -print-sysroot) == "$candidate" ]] || {
     echo "Cross GCC rejected the candidate sysroot override" >&2
     return 1
@@ -1193,14 +1194,15 @@ configure_and_stage() {
     echo "glibc configure did not enter true cross-compilation mode" >&2
     return 1
   }
-  grep -Fxq "CC = $candidate_cc" "$build_dir/config.make" || {
+  grep -Fxq "CC = $configured_cc" "$build_dir/config.make" || {
     echo "glibc configure did not retain the sealed cross compiler" >&2
     return 1
   }
-  grep -Fxq 'CXX = false' "$build_dir/config.make" || {
+  if ! grep -Fxq 'CXX = ' "$build_dir/config.make" \
+     || ! grep -Fxq 'ac_cv_env_CXX_value=false' "$build_dir/config.log"; then
     echo "glibc configure unexpectedly enabled a C++ compiler" >&2
     return 1
-  }
+  fi
 
   make -C "$build_dir" -j"$jobs" install-headers install_root="$candidate"
   make -C "$build_dir" -j1 install_root="$candidate" \
