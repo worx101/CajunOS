@@ -113,3 +113,12 @@ types, modes, content hashes, and symlink targets. It then checks the exported
 x86-64 UAPI with the sealed stage-one cross compiler, publishes an immutable
 cohort snapshot, and records the Linux, GCC, and nested Binutils provenance in
 its receipt.
+
+`scripts/install-glibc-headers-startfiles.sh` copies that sealed Linux snapshot
+twice, independently configures the locked glibc source for the CajunOS target,
+and uses the current upstream `install-headers` and `csu/subdir_lib` targets.
+It publishes public glibc headers with only `crt1.o`, `crti.o`, and `crtn.o`.
+The stage explicitly prevents host C++ header discovery and requires identical
+complete snapshot inventories, header-search and ELF probes, unchanged base
+content, and an exact receipt chain back through Linux, GCC, and Binutils. It
+does not publish a real or placeholder libc, GCC runtime, or dynamic loader.
