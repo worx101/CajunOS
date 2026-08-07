@@ -913,6 +913,7 @@ class KernelFirstBootStageTests(unittest.TestCase):
             "-nic none",
             "-kernel",
             "-initrd",
+            "usr_gen_init_cpio",
             "cajunos.first_boot=1",
             "cajunos.first_boot=0",
         ):

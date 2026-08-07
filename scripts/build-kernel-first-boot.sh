@@ -1505,7 +1505,7 @@ build_one() {
     HOSTCC="$host_cc" HOSTCXX="$host_cxx" \
     KCONFIG_CONFIG="$build/.config" \
     KCFLAGS="$effective_kcflags" KAFLAGS="$prefix_flags" \
-    -j"$jobs" bzImage vmlinux usr/gen_init_cpio
+    -j"$jobs" bzImage vmlinux usr_gen_init_cpio
   cmp -s "$build/.config" "$config_source" || {
     echo "Locked kernel config changed during $label build" >&2
     return 1
