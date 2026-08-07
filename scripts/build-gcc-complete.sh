@@ -1094,8 +1094,15 @@ def validate_libgcc_debug_evidence(path: Path) -> None:
     if not lines:
         fail("libgcc debug-flag evidence is empty")
     for line in lines:
+        # GNU make prints some real libgcc compile commands as continued shell
+        # lines. The retained line already contains the complete flag prefix
+        # needed by this contract; discard only its terminal continuation
+        # marker before tokenizing it as standalone evidence.
+        parse_line = line.rstrip()
+        if parse_line.endswith("\\"):
+            parse_line = parse_line[:-1].rstrip()
         try:
-            tokens = shlex.split(line)
+            tokens = shlex.split(parse_line)
         except ValueError:
             fail("libgcc debug-flag evidence has invalid shell syntax")
         positions = [index for index, token in enumerate(tokens) if token == "-DIN_LIBGCC2"]

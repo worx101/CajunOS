@@ -308,6 +308,13 @@ class GccCompleteStageContractTests(unittest.TestCase):
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
             evidence.write_text(
+                "/sealed/xgcc -O2 -g0 -DIN_LIBGCC2 -c libgcc2.c \\\n",
+                encoding="utf-8",
+            )
+            continued = self.internal("libgcc-debug-flags-contract", evidence)
+            self.assertEqual(continued.returncode, 0, continued.stderr)
+
+            evidence.write_text(
                 "/sealed/xgcc -O2 -g -g0 -DIN_LIBGCC2 -c libgcc2.c\n",
                 encoding="utf-8",
             )
