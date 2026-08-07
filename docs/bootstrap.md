@@ -147,7 +147,9 @@ entry points into independent files, and publishes an immutable functional
 libc snapshot. Current GCC trunk automatically links `-latomic_asneeded`; the
 stage uses GCC's explicit `-fno-link-libatomic` bootstrap cycle breaker and
 rejects any installed ELF that still needs libatomic, shared libgcc, an
-escaping runtime path, or an executable stack. The snapshot uses
+escaping runtime path, or an executable stack. Exactly fourteen upstream gconv
+modules may retain `RUNPATH=$ORIGIN`, which resolves to their own sealed module
+directory. The snapshot uses
 `lib64 -> usr/lib`, while the cohort uses `lib64 -> current/usr/lib`, so GCC's
 default `/lib64/ld-linux-x86-64.so.2` interpreter follows the same atomic
 snapshot selector as `/usr`. Dynamic, pthread, static, loader-resolution, and

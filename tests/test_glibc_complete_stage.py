@@ -155,9 +155,43 @@ class GlibcCompleteStageTests(unittest.TestCase):
             first = json.loads(self.command("elf-scan", root).stdout)
             second = json.loads(self.command("elf-scan", root).stdout)
             self.assertEqual(first, second)
-            self.assertEqual(first["schema"], "cajunos-glibc-elf-scan-v1")
+            self.assertEqual(first["schema"], "cajunos-glibc-elf-scan-v2")
             self.assertEqual(len(first["elf_files"]), 1)
             self.assertEqual(first["elf_files"][0]["path"], "usr/bin/probe")
+            self.assertEqual(first["origin_runpath"], [])
+
+    def test_elf_scan_separates_gconv_origin_from_escaping_runpaths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            allowed = root / "usr/lib/gconv/EUC-CN.so"
+            escaping = root / "usr/lib/foreign.so"
+            allowed.parent.mkdir(parents=True)
+            escaping.parent.mkdir(parents=True, exist_ok=True)
+            for output, runpath in (
+                (allowed, "$ORIGIN"),
+                (escaping, "$ORIGIN/.."),
+            ):
+                subprocess.run(
+                    [
+                        "/usr/bin/gcc", "-shared", "-fPIC",
+                        "-Wl,--enable-new-dtags", f"-Wl,-rpath,{runpath}",
+                        "-x", "c", "-", "-o", output,
+                    ],
+                    input="int cajunos_probe(void) { return 0; }\n",
+                    text=True,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            scan = json.loads(self.command("elf-scan", root).stdout)
+            self.assertEqual(
+                scan["origin_runpath"],
+                ["usr/lib/gconv/EUC-CN.so: RUNPATH=$ORIGIN"],
+            )
+            self.assertEqual(
+                scan["escaping_rpath_runpath"],
+                ["usr/lib/foreign.so: RUNPATH=$ORIGIN/.."],
+            )
 
     def test_selector_rollback_is_compare_and_swap(self):
         with tempfile.TemporaryDirectory() as directory:

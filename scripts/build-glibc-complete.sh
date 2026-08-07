@@ -94,10 +94,29 @@ def regular_hashes(root: Path) -> dict[str, str]:
     return hashes
 
 
+EXPECTED_ORIGIN_RUNPATH = [
+    "usr/lib/gconv/EUC-CN.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-JISX0213.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-JP-MS.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-JP.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-KR.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-TW.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-CN-EXT.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-CN.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-JP-3.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-JP.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-KR.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/JOHAB.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/SHIFT_JISX0213.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/UHC.so: RUNPATH=$ORIGIN",
+]
+
+
 def scan_installed_elf(root: Path) -> dict[str, object]:
     elf_files = []
     undefined_atomic = []
     forbidden_needed = []
+    origin_runpath = []
     escaping_rpath = []
     executable_stack = []
     for path in sorted(root.rglob("*")):
@@ -132,8 +151,11 @@ def scan_installed_elf(root: Path) -> dict[str, object]:
         for tag, value in re.findall(
             r"\((RPATH|RUNPATH)\).*Library (?:rpath|runpath): \[([^\]]*)\]", dynamic
         ):
-            if value:
-                escaping_rpath.append(f"{relative}: {tag}={value}")
+            record = f"{relative}: {tag}={value}"
+            if tag == "RUNPATH" and value == "$ORIGIN" and record in EXPECTED_ORIGIN_RUNPATH:
+                origin_runpath.append(record)
+            elif value:
+                escaping_rpath.append(record)
         program = subprocess.run(
             ["/usr/bin/readelf", "-lW", path], check=True, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -143,10 +165,11 @@ def scan_installed_elf(root: Path) -> dict[str, object]:
                 executable_stack.append(relative)
         elf_files.append({"path": relative, "sha256": sha256(path)})
     return {
-        "schema": "cajunos-glibc-elf-scan-v1",
+        "schema": "cajunos-glibc-elf-scan-v2",
         "elf_files": elf_files,
         "undefined_atomic_symbols": undefined_atomic,
         "forbidden_needed": forbidden_needed,
+        "origin_runpath": origin_runpath,
         "escaping_rpath_runpath": escaping_rpath,
         "executable_stack": executable_stack,
     }
@@ -617,17 +640,20 @@ elif command == "validate-completed":
     if scan != scan_installed_elf(snapshot):
         fail("retained installed-ELF scan does not match the live snapshot")
     if (
-        scan.get("schema") != "cajunos-glibc-elf-scan-v1"
+        scan.get("schema") != "cajunos-glibc-elf-scan-v2"
         or not isinstance(scan.get("elf_files"), list)
         or len(scan["elf_files"]) < 300
         or scan.get("undefined_atomic_symbols") != []
         or scan.get("forbidden_needed") != []
+        or scan.get("origin_runpath") != EXPECTED_ORIGIN_RUNPATH
         or scan.get("escaping_rpath_runpath") != []
         or scan.get("executable_stack") != []
     ):
         fail("completed installed-ELF scan is invalid")
     if receipt.get("outputs", {}).get("installed_elf_count") != len(scan["elf_files"]):
         fail("completed installed-ELF count is invalid")
+    if receipt.get("outputs", {}).get("origin_runpath") != EXPECTED_ORIGIN_RUNPATH:
+        fail("completed origin-runpath attestation is invalid")
 
     dynamic = probe_root / "dynamic"
     static_probe = probe_root / "static"
@@ -1714,7 +1740,8 @@ validate_completed() {
     probe_contract.dynamic 'ELF64-PIE-PT_INTERP=/lib64/ld-linux-x86-64.so.2' \
     probe_contract.execution candidate-loader-inhibit-cache-library-path-only \
     probe_contract.static ELF64-static-no-PT_INTERP-no-DT_NEEDED \
-    probe_contract.atomic_runtime no-undefined-or-needed-libatomic
+    probe_contract.atomic_runtime no-undefined-or-needed-libatomic \
+    probe_contract.origin_runpath exact-gconv-self-directory-set
 }
 
 ensure_cohort_lib64_alias() {
@@ -2372,8 +2399,31 @@ import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as stream:
     scan = json.load(stream)
+if scan.get("schema") != "cajunos-glibc-elf-scan-v2":
+    raise SystemExit("complete glibc installed ELF scan has the wrong schema")
 if len(scan.get("elf_files", [])) < 300:
     raise SystemExit("complete glibc installed too few ELF outputs")
+expected_origin_runpath = [
+    "usr/lib/gconv/EUC-CN.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-JISX0213.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-JP-MS.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-JP.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-KR.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/EUC-TW.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-CN-EXT.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-CN.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-JP-3.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-JP.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/ISO-2022-KR.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/JOHAB.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/SHIFT_JISX0213.so: RUNPATH=$ORIGIN",
+    "usr/lib/gconv/UHC.so: RUNPATH=$ORIGIN",
+]
+if scan.get("origin_runpath") != expected_origin_runpath:
+    raise SystemExit(
+        f"installed ELF scan found an unexpected origin runpath set: "
+        f"{scan.get('origin_runpath')}"
+    )
 for key in (
     "undefined_atomic_symbols", "forbidden_needed",
     "escaping_rpath_runpath", "executable_stack",
@@ -2518,6 +2568,8 @@ for path in sorted(output.parent.iterdir()):
     if not path.is_file() or path.is_symlink() or metadata.st_nlink != 1:
         raise SystemExit(f"unsupported root evidence sidecar: {path}")
     evidence_sha256[path.name] = sha256(path)
+with (probe_dir / "installed-elf-scan.json").open(encoding="utf-8") as stream:
+    installed_elf_scan = json.load(stream)
 
 receipt = {
     "schema": 1,
@@ -2633,15 +2685,15 @@ receipt = {
     "license_inventory": license_inventory,
     "outputs": {
         "probe_sha256": regular_hashes(probe_dir),
-        "installed_elf_count": len(json.load(
-            (probe_dir / "installed-elf-scan.json").open(encoding="utf-8")
-        )["elf_files"]),
+        "installed_elf_count": len(installed_elf_scan["elf_files"]),
+        "origin_runpath": installed_elf_scan["origin_runpath"],
     },
     "probe_contract": {
         "dynamic": "ELF64-PIE-PT_INTERP=/lib64/ld-linux-x86-64.so.2",
         "execution": "candidate-loader-inhibit-cache-library-path-only",
         "static": "ELF64-static-no-PT_INTERP-no-DT_NEEDED",
         "atomic_runtime": "no-undefined-or-needed-libatomic",
+        "origin_runpath": "exact-gconv-self-directory-set",
     },
     "deferred_runtime": {
         "libgcc_s": "absent",
