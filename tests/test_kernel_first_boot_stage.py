@@ -914,6 +914,7 @@ class KernelFirstBootStageTests(unittest.TestCase):
             "-kernel",
             "-initrd",
             "usr_gen_init_cpio",
+            "copy_flat_license_bundle",
             "cajunos.first_boot=1",
             "cajunos.first_boot=0",
         ):

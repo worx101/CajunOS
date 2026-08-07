@@ -612,7 +612,7 @@ if [[ ! $qemu_timeout =~ ^[1-9][0-9]*$ || $qemu_timeout -gt 600 ]]; then
   exit 72
 fi
 for required_command in \
-  awk cmp cp flock git grep install make python3 qemu-system-x86_64 \
+  awk cmp cp find flock git grep install make python3 qemu-system-x86_64 \
   readlink sha256sum tar tee timeout; do
   command -v "$required_command" >/dev/null || {
     echo "Missing required host command: $required_command" >&2
@@ -1597,6 +1597,22 @@ build_one() {
     > "$artifact_temporary/configuration/inventory-$label.json"
 }
 
+copy_flat_license_bundle() {
+  local source=$1 destination=$2 entry resolved name count=0
+  [[ -d $source && ! -L $source && -d $destination \
+     && ! -L $destination ]] || return 1
+  while IFS= read -r -d '' entry; do
+    name=${entry##*/}
+    [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -f $entry ]] || return 1
+    resolved=$(readlink -f -- "$entry")
+    [[ $resolved == "$source/"* && -f $resolved && ! -L $resolved ]] \
+      || return 1
+    install -m 0644 -- "$entry" "$destination/$name"
+    ((count += 1))
+  done < <(find -P "$source" -mindepth 1 -maxdepth 1 -print0)
+  (( count > 0 ))
+}
+
 build_one "$build_a" "$candidate_a" a
 build_one "$build_b" "$candidate_b" b
 "$script_path" --internal-python compare-json \
@@ -1629,10 +1645,10 @@ cp -a -- "$candidate_a/." "$artifact_temporary/boot/"
 git -C "$linux_source_dir" archive "$locked_linux_commit" -- "${license_paths[@]}" |
   tar -x -C "$artifact_temporary/licenses"
 mkdir -p "$artifact_temporary/licenses/gcc" "$artifact_temporary/licenses/glibc"
-cp -a -- "$artifacts_root/$gcc_build_id/licenses/gcc/." \
-  "$artifact_temporary/licenses/gcc/"
-cp -a -- "$artifacts_root/$glibc_build_id/licenses/glibc/." \
-  "$artifact_temporary/licenses/glibc/"
+copy_flat_license_bundle "$artifacts_root/$gcc_build_id/licenses/gcc" \
+  "$artifact_temporary/licenses/gcc"
+copy_flat_license_bundle "$artifacts_root/$glibc_build_id/licenses/glibc" \
+  "$artifact_temporary/licenses/glibc"
 
 {
   printf '%q' "$qemu_path"
