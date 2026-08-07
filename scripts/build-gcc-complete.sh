@@ -2398,15 +2398,23 @@ for name, value, component, stage, commit, tree, repository in (
 ):
     path = Path(str(value.get("receipt", "")))
     receipt = load_plain(path, f"{name} receipt")
+    # The first sealed Binutils receipt predates source_repository in its
+    # top-level schema. Its complete-glibc dependency wrapper supplies and
+    # hashes that missing provenance field, so bind the wrapper exactly while
+    # also requiring the locked historical receipt shape.
+    receipt_repository = None if name == "binutils" else repository
     if (
         path != artifacts / str(value.get("build_id", "")) / "receipt.json"
         or sha256(path) != value.get("receipt_sha256")
+        or value.get("source_commit") != commit
+        or value.get("source_tree") != tree
+        or value.get("source_repository") != repository
         or receipt.get("build_id") != value.get("build_id")
         or receipt.get("component") != component
         or receipt.get("stage") != stage
         or receipt.get("source_commit") != commit
         or receipt.get("source_tree") != tree
-        or receipt.get("source_repository") != repository
+        or receipt.get("source_repository") != receipt_repository
         or receipt.get("source_set_digest") != source_set_digest
         or receipt.get("source_authentication") != source_authentication
         or receipt.get("target") != target

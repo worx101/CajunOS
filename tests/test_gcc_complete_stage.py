@@ -153,6 +153,25 @@ class GccCompleteStageContractTests(unittest.TestCase):
             "sysroot_snapshot_digest",
         )
 
+    def test_dependency_resolver_binds_legacy_binutils_repository_provenance(
+        self,
+    ) -> None:
+        resolver = self.source_between(
+            "for name, value, component, stage, commit, tree, repository in (",
+            "\n\nlibgcc_gcc =",
+        )
+        self.assertIn(
+            'receipt_repository = None if name == "binutils" else repository',
+            resolver,
+        )
+        self.assertIn('value.get("source_commit") != commit', resolver)
+        self.assertIn('value.get("source_tree") != tree', resolver)
+        self.assertIn('value.get("source_repository") != repository', resolver)
+        self.assertIn(
+            'receipt.get("source_repository") != receipt_repository',
+            resolver,
+        )
+
     def test_compiler_and_runtime_probes_cover_the_complete_toolchain(self) -> None:
         self.assert_contains_all(
             "-dumpmachine",
