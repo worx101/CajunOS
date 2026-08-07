@@ -2,7 +2,7 @@ CAJUNOS_ROOT ?= /srv/cajunos
 PYTHON ?= python3
 
 .PHONY: fetch lock validate binutils-stage1 gcc-stage1 linux-headers \
-	glibc-headers-startfiles libgcc-bootstrap
+	glibc-headers-startfiles libgcc-bootstrap glibc-complete
 
 fetch:
 	$(PYTHON) scripts/fetch.py sync --root "$(CAJUNOS_ROOT)"
@@ -27,3 +27,6 @@ glibc-headers-startfiles:
 
 libgcc-bootstrap:
 	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-libgcc-bootstrap.sh
+
+glibc-complete:
+	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-glibc-complete.sh

@@ -138,3 +138,18 @@ so runtime lookups, symbol output, and the retained linker map never depend on
 disposable build paths. Completed and idempotent validation replays those
 semantic lookup, archive, symbol, and linker-map contracts in addition to
 checking their receipt-bound hashes.
+
+`scripts/build-glibc-complete.sh` consumes the sealed headers/startfiles
+snapshot and the selected corrected bootstrap-libgcc prefix. It performs two
+independent full builds and installs, permits exactly the upstream-generated
+replacement of `gnu/stubs-64.h`, normalizes glibc's four hard-linked `getconf`
+entry points into independent files, and publishes an immutable functional
+libc snapshot. Current GCC trunk automatically links `-latomic_asneeded`; the
+stage uses GCC's explicit `-fno-link-libatomic` bootstrap cycle breaker and
+rejects any installed ELF that still needs libatomic, shared libgcc, an
+escaping runtime path, or an executable stack. The snapshot uses
+`lib64 -> usr/lib`, while the cohort uses `lib64 -> current/usr/lib`, so GCC's
+default `/lib64/ld-linux-x86-64.so.2` interpreter follows the same atomic
+snapshot selector as `/usr`. Dynamic, pthread, static, loader-resolution, and
+`getconf` probes are replayed during completed validation. Shared GCC runtime,
+libatomic, and C++ remain deferred to the following compiler/runtime stage.
