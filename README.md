@@ -34,6 +34,7 @@ CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make glibc-headers-startfiles
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make libgcc-bootstrap
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make glibc-complete
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make gcc-complete
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make kernel-first-boot
 ```
 
 That environment variable is required only because this committed cohort
@@ -50,6 +51,11 @@ functional libc, pthread support, the dynamic loader, static libc, NSS/gconv
 modules, and libc utilities in a reproducible derived snapshot. The complete
 GCC stage derives the final bootstrap tools prefix and adds the C++ compiler,
 shared `libgcc_s`, libatomic, and libstdc++ against that sealed glibc snapshot.
+The kernel-first-boot stage then builds the locked x86-64 kernel twice, creates
+two deterministic raw initramfs archives containing a sealed static PID 1, and
+requires matching positive and fail-closed serial-console boots in a diskless
+QEMU machine. It publishes boot artifacts and evidence without advancing the
+tool or sysroot selectors.
 
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.

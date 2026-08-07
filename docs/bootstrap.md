@@ -79,7 +79,9 @@ The planned bootstrap sequence is:
    prefix.
 6. complete glibc.
 7. complete C/C++ cross compiler and runtime.
-8. base userland, kernel, init, bootloader, image, and clean-room boot tests.
+8. locked kernel plus deterministic minimal initramfs, proven by diskless
+   serial-console boots.
+9. base userland, init, bootloader, image, and clean-room boot tests.
 
 Each stage gets a unique log, immutable build ID, preserved license bundle,
 a recursive inventory of installed files, symlinks, directories, modes, and
@@ -178,3 +180,44 @@ gain a libatomic dependency, while the explicit atomic probe must resolve
 contracts; failed unselected candidates are quarantined, and the tools selector
 advances only after the permanent prefix, artifacts, and receipt have all been
 validated.
+
+`scripts/build-kernel-first-boot.sh` consumes the locked Linux source, the
+selected complete GCC prefix, and the active complete-glibc snapshot without
+changing any of them or advancing either selector. The committed
+`configs/x86_64-first-boot.config` is a fully resolved, compiler-bound x86-64
+configuration for a small built-in serial-console kernel: modules, SMP,
+networking, block storage, PCI, graphics, USB, sound, EFI, and ACPI are absent.
+The kernel retains ELF execution, an external raw initramfs, devtmpfs, procfs,
+sysfs, tmpfs, and one 8250 console. `CONFIG_WERROR` is disabled and the build
+applies the narrow `-Wno-constant-logical-operand` compatibility exception
+required by the locked GCC 17 snapshot; the kernel itself is not forced through
+userspace `-march` flags.
+
+This is a diagnostic first-boot kernel, not a deployable security baseline. Its
+minimal proof configuration intentionally omits CPU mitigations, KASLR and a
+relocatable image, stack protection, fortification, the security framework,
+networking, and storage. Those facilities return in later system-image stages
+under their own explicit contracts. `CONFIG_DEVTMPFS_MOUNT=y` does not mount
+devtmpfs when the root is initramfs, so the archive always carries the attested
+`/dev/console` node needed before PID 1 can mount anything.
+
+Two independent out-of-tree builds must produce byte-identical `bzImage`
+files, static `/init` executables, and raw `newc` archives. Each archive is
+generated with that build's own `usr/gen_init_cpio`, the locked source epoch,
+and an exact minimal topology containing `/init`, `/dev/console`, `/dev/null`,
+`/proc`, `/sys`, and `/run`. The static init is linked explicitly against the
+sealed glibc snapshot for `x86-64-v2`, carries no interpreter or dynamic
+dependency, requires PID 1, verifies its exact kernel release and immutable
+build ID, mounts procfs, and accepts exactly one
+`cajunos.first_boot=1` command-line token.
+
+Publication requires both a positive boot and a negative fail-closed boot under
+QEMU TCG using an explicit `pc-q35-10.0` machine, one `Nehalem-v1` CPU, one
+8250 serial device, no NIC, no default devices, and no builder disk. The serial
+evidence must reach `CAJUNOS_KERNEL_FIRST_BOOT_OK` only for the positive boot;
+the negative boot must emit an exact `CAJUNOS_KERNEL_FIRST_BOOT_FAIL` reason and
+must never emit the success marker. Receipts bind the source and orchestration
+commits, complete dependency chain, resolved config, build environment,
+inventories, hashes, QEMU topology, and both serial transcripts. Failed
+candidates are quarantined, and completed replay reruns all receipt, artifact,
+and boot contracts without mutating the sealed toolchain or sysroot.
