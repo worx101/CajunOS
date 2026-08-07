@@ -155,3 +155,26 @@ default `/lib64/ld-linux-x86-64.so.2` interpreter follows the same atomic
 snapshot selector as `/usr`. Dynamic, pthread, static, loader-resolution, and
 `getconf` probes are replayed during completed validation. Shared GCC runtime,
 libatomic, and C++ remain deferred to the following compiler/runtime stage.
+
+`scripts/build-gcc-complete.sh` consumes that sealed functional-glibc snapshot
+and the selected corrected bootstrap-libgcc prefix without changing either
+one. It configures exactly GCC compiler proper plus target `libgcc`, libatomic,
+and libstdc++, then builds and installs those four targets twice in independent
+out-of-tree builds. The target runtime is compiled for the
+`x86-64-v2`/generic baseline with GCC's automatic libatomic link temporarily
+disabled to break the runtime build cycle; the installed driver retains its
+normal as-needed libatomic behavior. Debug information is disabled explicitly
+for libgcc through `LIBGCC2_DEBUG_CFLAGS=-g0`, and libstdc++ precompiled headers
+are disabled so the two sealed installs have a reproducible complete inventory.
+
+Publication derives a new immutable tools prefix from the bootstrap-libgcc
+base and requires identical independent inventories, unchanged base and
+sysroot dependency inventories, and a receipt-bound provenance chain. Compiler
+driver, C++23 exceptions/threads, dynamic and static execution, shared-libgcc,
+and 16-byte atomic probes must all resolve only inside the final prefix and the
+sealed glibc snapshot. A program that does not use out-of-line atomics must not
+gain a libatomic dependency, while the explicit atomic probe must resolve
+`libatomic.so.1`. Completed validation replays those probes and inventory
+contracts; failed unselected candidates are quarantined, and the tools selector
+advances only after the permanent prefix, artifacts, and receipt have all been
+validated.

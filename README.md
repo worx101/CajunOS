@@ -33,6 +33,7 @@ CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make linux-headers
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make glibc-headers-startfiles
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make libgcc-bootstrap
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make glibc-complete
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make gcc-complete
 ```
 
 That environment variable is required only because this committed cohort
@@ -46,9 +47,9 @@ headers plus `crt1.o`, `crti.o`, and `crtn.o` in a new immutable snapshot. The
 next stage derives an immutable compiler prefix containing static bootstrap
 `libgcc` and GCC's target CRT helpers. The complete-glibc stage then publishes
 functional libc, pthread support, the dynamic loader, static libc, NSS/gconv
-modules, and libc utilities in a reproducible derived snapshot. Shared
-`libgcc_s`, libatomic, and the C++ runtime remain deliberately deferred to the
-complete GCC/runtime stage.
+modules, and libc utilities in a reproducible derived snapshot. The complete
+GCC stage derives the final bootstrap tools prefix and adds the C++ compiler,
+shared `libgcc_s`, libatomic, and libstdc++ against that sealed glibc snapshot.
 
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.
