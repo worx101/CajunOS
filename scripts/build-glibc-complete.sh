@@ -175,6 +175,68 @@ def scan_installed_elf(root: Path) -> dict[str, object]:
     }
 
 
+def validate_probe_link_map(
+    map_path: Path, snapshot: Path, libgcc_prefix: Path
+) -> None:
+    for root, label in ((snapshot, "snapshot"), (libgcc_prefix, "libgcc prefix")):
+        if not root.is_absolute() or os.path.normpath(root) != str(root):
+            fail(f"unsafe {label} for probe link-map contract")
+        try:
+            metadata = root.lstat()
+        except FileNotFoundError:
+            fail(f"probe link-map {label} does not exist")
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail(f"probe link-map {label} is not a real directory")
+    try:
+        map_metadata = map_path.lstat()
+    except FileNotFoundError:
+        fail("probe link map does not exist")
+    if (
+        not stat.S_ISREG(map_metadata.st_mode)
+        or map_metadata.st_nlink != 1
+        or stat.S_IMODE(map_metadata.st_mode) != 0o644
+    ):
+        fail("probe link map is not a plain mode-0644 single-linked file")
+
+    link_map = map_path.read_text(encoding="utf-8")
+    direct_runtime = f"{libgcc_prefix}/lib/gcc/"
+    driver_runtime = f"{libgcc_prefix}/bin/../lib/gcc/"
+    canonical_map = link_map.replace(driver_runtime, direct_runtime)
+    if (
+        f"{snapshot}/" not in canonical_map
+        or direct_runtime not in canonical_map
+        or "/.tmp-" in link_map
+        or "/work/" in link_map
+        or "/usr/lib/x86_64-linux-gnu" in link_map
+    ):
+        fail(f"{map_path.name} does not bind stable CajunOS inputs")
+
+    reference_pattern = re.compile(
+        r"(?<!\S)(?P<path>/[^\s()]+/libgcc\.a)"
+        r"(?:\((?P<member>[^()\s]+)\))?(?=\s|$)"
+    )
+    references = list(reference_pattern.finditer(link_map))
+    if not references or link_map.count("libgcc.a") != len(references):
+        fail(f"{map_path.name} has an unparseable libgcc reference")
+    prefix_real = libgcc_prefix.resolve(strict=True)
+    for match in references:
+        reported = match.group("path")
+        normalized = Path(os.path.normpath(reported))
+        try:
+            relative = normalized.relative_to(libgcc_prefix)
+            reported_real = Path(reported).resolve(strict=True)
+            reported_real.relative_to(prefix_real)
+        except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            fail(f"{map_path.name} libgcc reference escapes its sealed prefix")
+        if (
+            len(relative.parts) < 4
+            or relative.parts[:2] != ("lib", "gcc")
+            or relative.name != "libgcc.a"
+            or reported_real != normalized.resolve(strict=True)
+        ):
+            fail(f"{map_path.name} has an invalid libgcc reference")
+
+
 def require_pairs(arguments: list[str]) -> dict[str, str]:
     if len(arguments) % 2:
         fail("expected key/value pairs")
@@ -384,6 +446,10 @@ elif command == "no-shared-inodes":
         inode_sets.append(seen)
     if inode_sets[0] & inode_sets[1]:
         fail("snapshot copy shares regular-file inodes with its sealed base")
+elif command == "probe-map-contract":
+    if len(arguments) != 3:
+        fail("probe-map-contract requires MAP SNAPSHOT LIBGCC_PREFIX")
+    validate_probe_link_map(*(Path(value) for value in arguments))
 elif command == "selector-state":
     if len(arguments) != 3:
         fail("selector-state requires SYSROOT BASE_BUILD_ID BUILD_ID")
@@ -747,19 +813,13 @@ elif command == "validate-completed":
     for line in normalized_listing.splitlines():
         if "=>" in line and str(snapshot) not in line:
             fail(f"loader listing escaped the completed snapshot: {line}")
-    libgcc_prefix = receipt.get("dependencies", {}).get("libgcc", {}).get("prefix")
-    if not isinstance(libgcc_prefix, str):
+    libgcc_prefix_value = receipt.get("dependencies", {}).get("libgcc", {}).get("prefix")
+    if not isinstance(libgcc_prefix_value, str):
         fail("completed receipt lacks its libgcc prefix")
     for map_name in ("dynamic.map", "static.map"):
-        link_map = (probe_root / map_name).read_text(encoding="utf-8")
-        if (
-            str(snapshot) not in link_map
-            or f"{libgcc_prefix}/lib/gcc/" not in link_map
-            or "/.tmp-" in link_map
-            or "/work/" in link_map
-            or "/usr/lib/x86_64-linux-gnu" in link_map
-        ):
-            fail(f"{map_name} does not bind stable CajunOS inputs")
+        validate_probe_link_map(
+            probe_root / map_name, snapshot, Path(libgcc_prefix_value)
+        )
 else:
     fail(f"unknown internal command: {command}")
 PY

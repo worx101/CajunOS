@@ -193,6 +193,57 @@ class GlibcCompleteStageTests(unittest.TestCase):
                 ["usr/lib/foreign.so: RUNPATH=$ORIGIN/.."],
             )
 
+    def make_probe_map_fixture(self, root):
+        snapshot = root / "snapshot"
+        prefix = root / "tools/libgcc-bootstrap"
+        runtime = prefix / "lib/gcc/x86_64-cajunos-linux-gnu/17.0.0"
+        (prefix / "bin").mkdir(parents=True)
+        self.write(snapshot / "usr/lib/libc.so.6")
+        self.write(runtime / "libgcc.a")
+        map_path = root / "probe/dynamic.map"
+        reported_archive = prefix / "bin/../lib/gcc/x86_64-cajunos-linux-gnu/17.0.0/libgcc.a"
+        self.write(
+            map_path,
+            (
+                f"LOAD {snapshot}/usr/lib/libc.so.6\n"
+                f"LOAD {reported_archive}\n"
+                f"{reported_archive}(_udivdi3.o)\n"
+            ).encode(),
+        )
+        return map_path, snapshot, prefix
+
+    def test_probe_map_contract_accepts_stable_gcc_driver_spelling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.make_probe_map_fixture(Path(directory))
+            self.command("probe-map-contract", *fixture)
+
+    def test_probe_map_contract_rejects_escape_and_disposable_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            map_path, snapshot, prefix = self.make_probe_map_fixture(Path(directory))
+            original = map_path.read_text()
+            foreign = Path(directory) / "foreign/lib/gcc/x86_64/17.0.0/libgcc.a"
+            self.write(foreign)
+            stable_archive = (
+                f"{prefix}/bin/../lib/gcc/"
+                "x86_64-cajunos-linux-gnu/17.0.0/libgcc.a"
+            )
+            before, separator, after = original.rpartition(stable_archive)
+            self.assertTrue(separator)
+            escaped = before + str(foreign) + after
+            map_path.write_text(escaped)
+            outcome = self.command(
+                "probe-map-contract", map_path, snapshot, prefix, check=False
+            )
+            self.assertNotEqual(outcome.returncode, 0)
+            self.assertIn("escapes its sealed prefix", outcome.stderr)
+
+            map_path.write_text(original + "LOAD /srv/cajunos/work/foreign.o\n")
+            disposable = self.command(
+                "probe-map-contract", map_path, snapshot, prefix, check=False
+            )
+            self.assertNotEqual(disposable.returncode, 0)
+            self.assertIn("does not bind stable CajunOS inputs", disposable.stderr)
+
     def test_selector_rollback_is_compare_and_swap(self):
         with tempfile.TemporaryDirectory() as directory:
             sysroot = Path(directory) / "sysroot"
