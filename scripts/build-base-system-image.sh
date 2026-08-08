@@ -1915,6 +1915,10 @@ build_grub() {
   local source_copy=$temporary_root/grub-source-$label
   local build=$temporary_root/grub-build-$label
   local prefix=$temporary_root/grub-install-$label
+  local logical_prefix=/usr
+  local installed_prefix=$prefix$logical_prefix
+  local grub_path_flags
+  grub_path_flags="-ffile-prefix-map=$source_copy=/usr/src/grub -fmacro-prefix-map=$source_copy=/usr/src/grub -fdebug-prefix-map=$source_copy=/usr/src/grub -ffile-prefix-map=$build=/usr/src/grub-build -fmacro-prefix-map=$build=/usr/src/grub-build -fdebug-prefix-map=$build=/usr/src/grub-build"
   mkdir -- "$source_copy" "$build" "$prefix"
   git -C "$grub_source" archive "$grub_commit" | tar -x -C "$source_copy"
   find "$source_copy" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
@@ -1926,17 +1930,19 @@ build_grub() {
   (
     cd "$build"
     env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+      CFLAGS="-O2 -g0 $grub_path_flags" \
+      TARGET_CFLAGS="-Os $grub_path_flags" \
       "$source_copy/configure" \
-        --prefix="$prefix" --target=i386 --with-platform=pc \
+        --prefix="$logical_prefix" --target=i386 --with-platform=pc \
         --disable-werror --disable-nls --disable-device-mapper \
         --disable-grub-mount --disable-grub-mkfont
     env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
       make -j"$jobs"
     env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-      make install
+      make DESTDIR="$prefix" install
   )
-  [[ -x $prefix/bin/grub-mkimage \
-     && -f $prefix/lib/grub/i386-pc/boot.img ]] || {
+  [[ -x $installed_prefix/bin/grub-mkimage \
+     && -f $installed_prefix/lib/grub/i386-pc/boot.img ]] || {
     echo "Source-built GRUB lacks required PC BIOS tools" >&2
     return 1
   }
@@ -1994,7 +2000,7 @@ make_ext4() {
 make_disk() {
   local label=$1
   local disk=$temporary_root/disk-$label.raw
-  local grub_prefix=$temporary_root/grub-install-$label
+  local grub_prefix=$temporary_root/grub-install-$label/usr
   local setup=$temporary_root/grub-setup-$label
   truncate -s "$disk_bytes" "$disk"
   /usr/sbin/sgdisk --zap-all --clear --set-alignment=1 \

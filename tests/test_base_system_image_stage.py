@@ -992,6 +992,27 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertIn("GNULIB_REVISION=", contents)
         self.assertIn('chown -R 0:0 "$1"', contents)
         self.assertIn("validate-ext4", contents)
+        self.assertIn('local logical_prefix=/usr', contents)
+        self.assertIn('local installed_prefix=$prefix$logical_prefix', contents)
+        self.assertIn(
+            '-ffile-prefix-map=$source_copy=/usr/src/grub', contents
+        )
+        self.assertIn(
+            '-fmacro-prefix-map=$source_copy=/usr/src/grub', contents
+        )
+        self.assertIn(
+            '-fdebug-prefix-map=$source_copy=/usr/src/grub', contents
+        )
+        self.assertIn(
+            '-ffile-prefix-map=$build=/usr/src/grub-build', contents
+        )
+        self.assertIn('CFLAGS="-O2 -g0 $grub_path_flags"', contents)
+        self.assertIn('TARGET_CFLAGS="-Os $grub_path_flags"', contents)
+        self.assertIn('--prefix="$logical_prefix"', contents)
+        self.assertIn('make DESTDIR="$prefix" install', contents)
+        self.assertIn(
+            'local grub_prefix=$temporary_root/grub-install-$label/usr', contents
+        )
         self.assertNotIn("/usr/sbin/grub-install", contents)
         self.assertNotIn("sudo ", contents)
         self.assertRegex(

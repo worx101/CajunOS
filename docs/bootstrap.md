@@ -250,8 +250,11 @@ ignores `/etc/mke2fs.conf`; block, inode, and flex-group geometry plus the exact
 feature set are supplied explicitly and replayed from the superblock. A fixed-GUID
 GPT gives GRUB an EF02 BIOS Boot partition and CajunOS its root partition. GRUB is
 bootstrapped and built from the locked upstream sources; no host
-`grub-install` is used. A small attested installer implements the fixed-layout
-i386-pc subset of upstream `setup.c`, embedding the independently built
+`grub-install` is used. Its independent source and build paths are mapped to
+stable logical paths, and both builds use `/usr` as their logical prefix with
+separate `DESTDIR` roots so GRUB's compiled `__FILE__` strings and generated
+tools cannot encode the A/B workspace names. A small attested installer
+implements the fixed-layout i386-pc subset of upstream `setup.c`, embedding the independently built
 `core.img` without loop devices, mounts, or root privileges. Linux selects the
 root with its GPT `PARTUUID`; filesystem UUID is used only by GRUB to locate
 `grub.cfg`.
