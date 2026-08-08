@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "selection": "reviewed-exact-commits",
+  "components": [
+    {
+      "name": "busybox",
+      "stage": "base-system",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://git.busybox.net/busybox.git"
+      ],
+      "project": "https://busybox.net/",
+      "license_files": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "grub",
+      "stage": "base-system",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://gitlab.freedesktop.org/gnu-grub/grub.git"
+      ],
+      "project": "https://www.gnu.org/software/grub/",
+      "license_files": [
+        "COPYING"
+      ]
+    },
+    {
+      "name": "gnulib",
+      "stage": "base-system-build-input",
+      "vcs": "git",
+      "ref": "refs/heads/master",
+      "depth": 1,
+      "repositories": [
+        "https://git.savannah.gnu.org/git/gnulib.git"
+      ],
+      "project": "https://www.gnu.org/software/gnulib/",
+      "license_files": [
+        "COPYING"
+      ]
+    }
+  ]
+}

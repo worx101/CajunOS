@@ -1,0 +1,53 @@
+{
+  "components": [
+    {
+      "canonical_repository": "https://git.busybox.net/busybox.git",
+      "commit": "3db20fa07b719a1284f61bf165cd78d0fde6f381",
+      "commit_time": "2026-07-24T18:38:38+02:00",
+      "name": "busybox",
+      "ref": "refs/heads/master",
+      "repository": "https://git.busybox.net/busybox.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "grep: support --quiet",
+      "transport_authenticated": true,
+      "tree": "dae826b39b6ce20608f6f78fa9d3b7a3c359bda6",
+      "vcs": "git"
+    },
+    {
+      "canonical_repository": "https://gitlab.freedesktop.org/gnu-grub/grub.git",
+      "commit": "8cda718c030b47886434565801861e0d5efd1267",
+      "commit_time": "2026-08-07T01:20:03-03:00",
+      "name": "grub",
+      "ref": "refs/heads/master",
+      "repository": "https://gitlab.freedesktop.org/gnu-grub/grub.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "fs/zfs/zfs: Mark bookmark_v2 and bookmark_written as supported",
+      "transport_authenticated": true,
+      "tree": "bdee1f7efde81139983705209fdc156bc771253c",
+      "vcs": "git"
+    },
+    {
+      "canonical_repository": "https://git.savannah.gnu.org/git/gnulib.git",
+      "commit": "9f48fb992a3d7e96610c4ce8be969cff2d61a01b",
+      "commit_time": "2022-02-12T16:34:01-08:00",
+      "name": "gnulib",
+      "ref": "refs/heads/master",
+      "repository": "https://git.savannah.gnu.org/git/gnulib.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "filevercmp: fix several unexpected results",
+      "transport_authenticated": true,
+      "tree": "75f9d6ae709a14d803a402268dc976e4de113934",
+      "vcs": "git"
+    }
+  ],
+  "generated_at": "2026-08-08T10:30:47+00:00",
+  "manifest": "manifests/base-system.json",
+  "manifest_sha256": "sha256:66970718a0affa7979da0775d6e766537ac08b942474e636d97929d409d6af63",
+  "schema": 1,
+  "selection": "reviewed-exact-commits",
+  "source_authentication": "authenticated",
+  "source_set_digest": "sha256:34f418ceb92c262207320fbff55d15664eed49cfc554f85793d622dec9b6333c"
+}

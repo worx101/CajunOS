@@ -221,3 +221,51 @@ commits, complete dependency chain, resolved config, build environment,
 inventories, hashes, QEMU topology, and both serial transcripts. Failed
 candidates are quarantined, and completed replay reruns all receipt, artifact,
 and boot contracts without mutating the sealed toolchain or sysroot.
+
+### Base system image
+
+`scripts/build-base-system-image.sh` begins milestone 9 without changing the
+sealed four-component bootstrap lock. BusyBox, GRUB, and the Gnulib revision
+named by GRUB's `bootstrap.conf` live in `manifests/base-system.json` and its
+reviewed exact-commit lock. The stage starts BusyBox from `allnoconfig`, applies
+the committed fragment, disables the `tc` applet that is incompatible with the
+locked Linux 7.2 UAPI, and carries both `ARCH` and `CROSS_COMPILE` through the
+install target so installation cannot rebuild with the Debian host compiler.
+
+The deployable kernel restores Q35/Proxmox essentials as built-ins: SMP, ACPI,
+PCI, GPT parsing, VirtIO block/SCSI/network, IPv4, ext4, devtmpfs, and serial.
+It also restores KASLR, CPU mitigations, strong stack protection, fortification,
+hardened usercopy, and the Linux security framework. Modules remain disabled
+so the kernel and image cannot drift independently.
+
+Two independent root trees are normalized to the Linux commit epoch and
+populated into fixed-UUID ext4 images under one fakeroot session that explicitly
+maps every inode to uid/gid 0. The filesystem hash seed and feature set are
+fixed, and the completed images must be byte-identical. A fixed-GUID GPT gives
+GRUB an EF02 BIOS Boot partition and CajunOS its root partition. GRUB is
+bootstrapped and built from the locked upstream sources; no host
+`grub-install` is used. A small attested installer implements the fixed-layout
+i386-pc subset of upstream `setup.c`, embedding the independently built
+`core.img` without loop devices, mounts, or root privileges. Linux selects the
+root with its GPT `PARTUUID`; filesystem UUID is used only by GRUB to locate
+`grub.cfg`.
+
+The positive clean-room probe attaches only the raw disk and a user-mode
+VirtIO NIC to a pinned Q35/SeaBIOS TCG machine. Init mounts the virtual filesystems,
+proves that the mounted root's major/minor resolves to the expected PARTUUID,
+configures `eth0` using a renewing DHCP daemon, and emits exact serial markers.
+The negative probe direct-loads the same kernel against the same GPT root image
+with the wrong locked token; it does not exercise GRUB a second time. It must
+power off after the exact `cmdline-token` failure without emitting build, root,
+network, or success markers. Two complete trees, ext4 images, raw disks, serial transcripts,
+licenses, dependency receipts, host inputs, and selector immutability are bound
+into the receipt and replayed before an existing result is accepted. SSH and
+the native package toolchain remain explicitly deferred to the developer-seed
+stage.
+
+The QEMU proof does not by itself claim the final tower1 storage contract.
+Before a VM or template is accepted on tower1, deployment must boot the image
+through its actual VirtIO-SCSI controller, enable the ext4 journal on the grown
+root filesystem, run a clean forced `fsck`, and retain evidence for both the
+controller-backed boot and filesystem transition. Those are mandatory
+deployment gates rather than properties of this deterministic 9A seed image.

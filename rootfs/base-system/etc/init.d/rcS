@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+fail()
+{
+    echo "CAJUNOS_BASE_SYSTEM_FAIL $1"
+    sync
+    exec /sbin/poweroff -f
+}
+
+echo CAJUNOS_BASE_SYSTEM_BEGIN
+
+/bin/mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev || fail devtmpfs
+/bin/mount -t proc -o nosuid,nodev,noexec proc /proc || fail proc
+/bin/mount -t sysfs -o nosuid,nodev,noexec sysfs /sys || fail sysfs
+/bin/mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run || fail run
+/bin/mkdir -p /dev/pts
+/bin/mount -t devpts -o mode=0620,gid=5,nosuid,noexec devpts /dev/pts || fail devpts
+
+token_count=$(/usr/bin/awk '
+    { for (field = 1; field <= NF; field++)
+        if ($field == "cajunos.base_system=1") count++ }
+    END { print count + 0 }
+' /proc/cmdline)
+[ "$token_count" = 1 ] || fail cmdline-token
+
+build_id=$(/bin/cat /etc/cajunos-build-id) || fail build-id
+[ -n "$build_id" ] || fail build-id
+echo "CAJUNOS_BASE_SYSTEM_BUILD_ID $build_id"
+
+/bin/hostname -F /etc/hostname || fail hostname
+/sbin/mdev -s || fail mdev
+/sbin/ip link set lo up || fail loopback
+
+root_device=$(/usr/bin/awk '$5 == "/" { print $3; exit }' /proc/self/mountinfo)
+root_sysfs=
+for candidate in /sys/class/block/*; do
+    [ "$(/bin/cat "$candidate/dev" 2>/dev/null || true)" = "$root_device" ] || continue
+    root_sysfs=$candidate
+    break
+done
+[ -n "$root_sysfs" ] || fail root-device
+root_partuuid=$(/bin/cat /etc/cajunos-root-partuuid) || fail root-partuuid
+/bin/grep -q "^PARTUUID=$root_partuuid$" "$root_sysfs/uevent" || fail root-partuuid
+echo CAJUNOS_BASE_SYSTEM_ROOT_OK
+
+if [ -e /sys/class/net/eth0 ]; then
+    /sbin/ip link set eth0 up || fail net-link
+    /sbin/udhcpc -f -n -p /run/udhcpc.eth0.pid -t 10 -T 1 \
+        -i eth0 -s /etc/udhcpc/default.script &
+    udhcpc_pid=$!
+    dhcp_wait=0
+    while ! /sbin/ip -4 addr show dev eth0 | /bin/grep -q 'inet '; do
+        if ! /bin/kill -0 "$udhcpc_pid" 2>/dev/null; then
+            wait "$udhcpc_pid" 2>/dev/null || true
+            fail dhcp
+        fi
+        dhcp_wait=$((dhcp_wait + 1))
+        if [ "$dhcp_wait" -ge 15 ]; then
+            /bin/kill "$udhcpc_pid" 2>/dev/null || true
+            wait "$udhcpc_pid" 2>/dev/null || true
+            fail dhcp-timeout
+        fi
+        /bin/sleep 1
+    done
+    pidfile_pid=$(/bin/cat /run/udhcpc.eth0.pid) || fail dhcp-pidfile
+    [ "$pidfile_pid" = "$udhcpc_pid" ] || fail dhcp-pidfile
+    /bin/kill -0 "$udhcpc_pid" 2>/dev/null || fail dhcp-renewal
+    echo CAJUNOS_BASE_SYSTEM_NETWORK_OK
+else
+    fail net-device
+fi
+
+echo "CAJUNOS_BASE_SYSTEM_UNAME $(/bin/uname -r)"
+echo CAJUNOS_BASE_SYSTEM_OK

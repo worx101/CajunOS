@@ -35,6 +35,8 @@ CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make libgcc-bootstrap
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make glibc-complete
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make gcc-complete
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make kernel-first-boot
+make fetch-base-system
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make base-system-image
 ```
 
 That environment variable is required only because this committed cohort
@@ -56,6 +58,13 @@ two deterministic raw initramfs archives containing a sealed static PID 1, and
 requires matching positive and fail-closed serial-console boots in a diskless
 QEMU machine. It publishes boot artifacts and evidence without advancing the
 tool or sysroot selectors.
+
+The base-system-image stage then consumes a separate reviewed lock for BusyBox,
+GRUB, and GRUB's exact Gnulib bootstrap input. It builds a deployable kernel,
+static base userland, deterministic ext4 filesystem, and deterministic GPT/BIOS
+raw disk twice. Publication requires a disk-only GRUB boot with renewing DHCP over
+VirtIO and a separate fail-closed command-line probe. SSH and the native package
+toolchain intentionally remain in the following developer-seed milestone.
 
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.

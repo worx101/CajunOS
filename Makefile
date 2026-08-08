@@ -3,7 +3,7 @@ PYTHON ?= python3
 
 .PHONY: fetch lock validate binutils-stage1 gcc-stage1 linux-headers \
 	glibc-headers-startfiles libgcc-bootstrap glibc-complete gcc-complete \
-	kernel-first-boot
+	kernel-first-boot fetch-base-system validate-base-system base-system-image
 
 fetch:
 	$(PYTHON) scripts/fetch.py sync --root "$(CAJUNOS_ROOT)"
@@ -37,3 +37,14 @@ gcc-complete:
 
 kernel-first-boot:
 	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-kernel-first-boot.sh
+
+fetch-base-system:
+	$(PYTHON) scripts/fetch.py sync --root "$(CAJUNOS_ROOT)" \
+		--manifest manifests/base-system.json --lock locks/base-system.lock.json
+
+validate-base-system:
+	$(PYTHON) scripts/fetch.py validate --root "$(CAJUNOS_ROOT)" \
+		--manifest manifests/base-system.json --lock locks/base-system.lock.json
+
+base-system-image:
+	CAJUNOS_ROOT="$(CAJUNOS_ROOT)" scripts/build-base-system-image.sh
