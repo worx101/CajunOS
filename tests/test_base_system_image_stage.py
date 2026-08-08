@@ -116,6 +116,26 @@ class BaseSystemImageStageTests(unittest.TestCase):
         (root / "sbin/init").symlink_to("../bin/busybox")
         return root
 
+    def selected_tools_fixture(self, name: str) -> tuple[Path, Path, Path, str]:
+        target = "x86_64-cajunos-linux-gnu"
+        tools = self.temporary_root / name / "tools"
+        selected = tools / "gcc-complete-test"
+        binutils = tools / "binutils-stage1-test"
+        (selected / "bin").mkdir(parents=True)
+        (binutils / "bin").mkdir(parents=True)
+        (binutils / target / "bin").mkdir(parents=True)
+        gcc = selected / "bin" / f"{target}-gcc"
+        gcc.write_bytes(b"sealed gcc")
+        gcc.chmod(0o755)
+        for tool in ("strip", "readelf"):
+            primary = binutils / "bin" / f"{target}-{tool}"
+            primary.write_bytes(f"sealed {tool}".encode())
+            primary.chmod(0o755)
+            os.link(primary, binutils / target / "bin" / tool)
+            reported = selected / "bin" / f"{target}-{tool}"
+            reported.symlink_to(os.path.relpath(primary, reported.parent))
+        return tools, selected, binutils, target
+
     def set_named_acl(self, path: Path, specification: str) -> None:
         setfacl = shutil.which("setfacl")
         if setfacl is None:
@@ -189,6 +209,11 @@ class BaseSystemImageStageTests(unittest.TestCase):
                     "build_id": "gcc-id", "prefix": "/tools/gcc", "receipt": "/artifacts/gcc/receipt.json",
                     "receipt_sha256": "gcc-receipt",
                 },
+                "binutils": {
+                    "build_id": "binutils-id", "prefix": "/tools/binutils",
+                    "receipt": "/artifacts/binutils/receipt.json",
+                    "receipt_sha256": "binutils-receipt",
+                },
                 "glibc": {
                     "build_id": "glibc-id", "snapshot": "/sysroot/glibc",
                     "receipt": "/artifacts/glibc/receipt.json", "receipt_sha256": "glibc-receipt",
@@ -238,6 +263,7 @@ class BaseSystemImageStageTests(unittest.TestCase):
             "schema", "1", "component", "system-image", "stage", "base-system-image",
             "build_id", build_id, "sources.linux.commit", "linux-commit",
             "dependencies.gcc.receipt_sha256", "gcc-receipt",
+            "dependencies.binutils.receipt_sha256", "binutils-receipt",
             "kernel.release", "7.2.0-cajunos+", "disk.root_partuuid", "root-guid",
             "qemu.machine", "pc-q35-10.0", "security_contract.kaslr", "enabled",
             "reproducibility.gpt_disk_identical", "True",
@@ -307,6 +333,44 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assert_accepts("validate-busybox-config", busybox)
         busybox.write_text(busybox.read_text().replace("CONFIG_TC=n", "CONFIG_TC=y"))
         self.assert_rejects("validate-busybox-config", busybox)
+
+    def test_selected_tool_topology_is_exact_and_fail_closed(self) -> None:
+        tools, selected, binutils, target = self.selected_tools_fixture("accepted")
+        result = self.internal(
+            "validate-selected-tools", tools, selected, binutils, target
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = json.loads(result.stdout)
+        self.assertEqual(evidence["gcc"]["links"], 1)
+        self.assertEqual(evidence["strip"]["links"], 2)
+        self.assertEqual(evidence["readelf"]["links"], 2)
+
+        tools, selected, binutils, target = self.selected_tools_fixture("third-link")
+        os.link(
+            binutils / "bin" / f"{target}-strip",
+            self.temporary_root / "escaping-strip-hardlink",
+        )
+        self.assert_rejects(
+            "validate-selected-tools", tools, selected, binutils, target
+        )
+
+        tools, selected, binutils, target = self.selected_tools_fixture("wrong-alias")
+        alias = binutils / target / "bin/strip"
+        alias.unlink()
+        alias.write_bytes(b"sealed strip")
+        alias.chmod(0o755)
+        self.assert_rejects(
+            "validate-selected-tools", tools, selected, binutils, target
+        )
+
+        tools, selected, binutils, target = self.selected_tools_fixture("wrong-target")
+        reported = selected / "bin" / f"{target}-strip"
+        wrong = binutils / "bin" / f"{target}-readelf"
+        reported.unlink()
+        reported.symlink_to(os.path.relpath(wrong, reported.parent))
+        self.assert_rejects(
+            "validate-selected-tools", tools, selected, binutils, target
+        )
 
     def test_overlay_is_locked_serial_dhcp_init_with_locked_root(self) -> None:
         executable_paths = {
@@ -653,6 +717,9 @@ class BaseSystemImageStageTests(unittest.TestCase):
         mutations = {
             "source": ("sources.linux.commit", "other-linux"),
             "dependency": ("dependencies.gcc.receipt_sha256", "other-gcc"),
+            "binutils-dependency": (
+                "dependencies.binutils.receipt_sha256", "other-binutils"
+            ),
             "kernel": ("kernel.release", "other-kernel"),
             "disk": ("disk.root_partuuid", "other-root"),
             "qemu": ("qemu.machine", "other-machine"),
@@ -700,7 +767,7 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertIn("cohort_id=${cohort_id:0:16}", contents)
         self.assertIn("validate_live_dependencies", contents)
         self.assertIn('gcc_helper_sha256 "$gcc_helper_sha256"', contents)
-        self.assertIn('strip_driver=$(readlink -f -- "$strip_driver_reported")', contents)
+        self.assertIn('strip_driver=$binutils_prefix/bin/$target-strip', contents)
         self.assertIn("trap cleanup EXIT", contents)
         self.assertIn("trap 'exit 130' INT", contents)
         self.assertIn("trap 'exit 143' TERM", contents)
@@ -718,6 +785,211 @@ class BaseSystemImageStageTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_binutils_replay_and_selector_checks_precede_tool_use(self) -> None:
+        contents = SCRIPT.read_text(encoding="utf-8")
+        tools_capture = contents.index(
+            'initial_tools_selector=$(readlink -- "$tools_selector")'
+        )
+        tools_resolution = contents.index(
+            'tools_prefix=$(readlink -f -- "$tools_root/$initial_tools_selector")'
+        )
+        sysroot_capture = contents.index(
+            'initial_sysroot_selector=$(readlink -- "$sysroot_selector")'
+        )
+        sysroot_resolution = contents.index("glibc_snapshot=$(readlink -f --")
+        self.assertLess(tools_capture, tools_resolution)
+        self.assertLess(sysroot_capture, sysroot_resolution)
+        selector_check = contents.split("selector_state_is_initial() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        for contract in (
+            'readlink -- "$tools_selector"',
+            'readlink -f -- "$tools_selector"',
+            'readlink -- "$sysroot_selector"',
+            'readlink -f -- "$sysroot_selector"',
+        ):
+            self.assertIn(contract, selector_check)
+        selector_confinement = contents.split(
+            '[[ $tools_prefix == "$tools_root/"*', 1
+        )[1].split(
+            'echo "Selected dependency resolves outside its managed prefix"', 1
+        )[0]
+        self.assertIn(
+            '$tools_prefix == "$tools_root/$initial_tools_selector"',
+            selector_confinement,
+        )
+        self.assertIn(
+            '"$sysroot_root/$cohort_id/$initial_sysroot_selector"',
+            selector_confinement,
+        )
+
+        dependency_replay = contents.split(
+            "validate_live_dependencies() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertLess(
+            dependency_replay.index("validate_binutils_dependency"),
+            dependency_replay.index("validate-selected-tools"),
+        )
+        self.assertLess(
+            dependency_replay.index("validate-selected-tools"),
+            dependency_replay.index(
+                '"$gcc_helper" --internal-python validate-completed'
+            ),
+        )
+        for field in ("build_id", "prefix", "receipt", "receipt_sha256"):
+            self.assertIn(f"dependencies.binutils.{field}", dependency_replay)
+        binutils_replay = contents.split(
+            "validate_binutils_dependency() {", 1
+        )[1].split("\n}", 1)[0]
+        for topology_check in (
+            "receipt_path.lstat()",
+            "stat.S_ISREG(receipt_metadata.st_mode)",
+            "stat.S_IMODE(receipt_metadata.st_mode) != 0o644",
+            "receipt_metadata.st_nlink != 1",
+        ):
+            self.assertIn(topology_check, binutils_replay)
+
+        live_function = contents.index("validate_live_dependencies() {")
+        live_function_end = contents.index("\n}\n", live_function) + 2
+        lock = contents.index('exec 9>"$work_root/.cajunos-build.lock"')
+        driver_assignment = contents.index("\ngcc_driver=$tools_prefix/bin/$target-gcc")
+        self.assertLess(live_function_end, driver_assignment)
+        self.assertLess(driver_assignment, lock)
+        self.assertNotIn(
+            "\nvalidate_live_dependencies\n",
+            contents[live_function_end:lock],
+        )
+
+        build_id_material = contents.split('build_id=$("$script_path"', 1)[1].split(
+            "\n\nrun_id=", 1
+        )[0]
+        self.assertIn(
+            'binutils_receipt_sha256 "$binutils_receipt_sha256"',
+            build_id_material,
+        )
+        glibc_base_confinement = contents.split(
+            'glibc_base_snapshot_name=$(basename -- "$glibc_base_snapshot")', 1
+        )[1].split(
+            'echo "glibc receipt base is not confined', 1
+        )[0]
+        self.assertIn(
+            '$glibc_base_snapshot_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$',
+            glibc_base_confinement,
+        )
+        self.assertIn(
+            '"$sysroot_root/$cohort_id/snapshots/$glibc_base_snapshot_name"',
+            glibc_base_confinement,
+        )
+        self.assertIn(
+            '$(readlink -f -- "$glibc_base_snapshot") == "$glibc_base_snapshot"',
+            glibc_base_confinement,
+        )
+        self.assertIn(
+            '"dependencies": {"gcc", "binutils", "glibc"}', contents
+        )
+        for field in ("build_id", "prefix", "receipt", "receipt_sha256"):
+            self.assertIn(f'"dependencies.binutils":', contents)
+            self.assertIn(f"dependencies.binutils.{field}", contents)
+        receipt_payload = contents.split(
+            'CAJUNOS_BASE_SYSTEM_RECEIPT=$(python3 - <<\'PY\'', 1
+        )[1].split("\nPY", 1)[0]
+        binutils_payload = receipt_payload.split('"binutils": {', 1)[1].split(
+            "\n        },", 1
+        )[0]
+        self.assertEqual(
+            {
+                line.split('"', 2)[1]
+                for line in binutils_payload.splitlines()
+                if line.strip().startswith('"')
+            },
+            {"build_id", "prefix", "receipt", "receipt_sha256"},
+        )
+
+        validate_inputs = contents.split("validate_inputs() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertEqual(validate_inputs.count("selector_state_is_initial"), 2)
+        self.assertLess(
+            validate_inputs.index("selector_state_is_initial"),
+            validate_inputs.index('"$project_root/scripts/fetch.py" validate'),
+        )
+        self.assertLess(
+            validate_inputs.index("validate_live_dependencies"),
+            validate_inputs.rindex("selector_state_is_initial"),
+        )
+        for guarded_barrier in (
+            '"$project_root/scripts/fetch.py" validate --root "$cajunos_root" --json \\\n    >/dev/null || return 1',
+            '--manifest "$system_manifest" --lock "$system_lock" --json >/dev/null \\\n    || return 1',
+            "validate_live_dependencies || return 1",
+            "selector_state_is_initial || return 1",
+        ):
+            self.assertIn(guarded_barrier, validate_inputs)
+        for guarded_barrier in (
+            "validate_binutils_dependency || return 1",
+            "validate-selected-tools",
+            'dependencies.binutils.receipt_sha256 "$binutils_receipt_sha256" >/dev/null \\\n    || return 1',
+            'snapshot "$glibc_snapshot" >/dev/null || return 1',
+        ):
+            self.assertIn(guarded_barrier, dependency_replay)
+        self.assertRegex(
+            dependency_replay,
+            r"validate-selected-tools \\\n(?:.*\\\n)*.*>/dev/null \\\n    \|\| return 1",
+        )
+        self.assertIn(
+            "validate_inputs\nbuild_kernel a\nbuild_kernel b",
+            contents,
+        )
+        prepublish = contents.index(
+            '\nvalidate_inputs\nvalidate_candidate "$artifact_temporary"'
+        )
+        receipt_creation = contents.index(
+            'with (artifact / "receipt.json").open("w"'
+        )
+        self.assertLess(receipt_creation, prepublish)
+
+        preflight = contents.index("if [[ $preflight_only == 1 ]]; then")
+        completed = contents.index("if [[ -d $build_final && ! -L $build_final")
+        log_creation = contents.index('mkdir -p -- "$log_dir"')
+        self.assertLess(lock, preflight)
+        self.assertLess(preflight, completed)
+        self.assertLess(preflight, log_creation)
+        preflight_block = contents[preflight:completed]
+        self.assertIn("validate_inputs", preflight_block)
+        self.assertIn(
+            'CAJUNOS_BASE_SYSTEM_PREFLIGHT_OK build_id=$build_id',
+            preflight_block,
+        )
+        for forbidden in ("build_kernel", "build_busybox", "mkdir --"):
+            self.assertNotIn(forbidden, preflight_block)
+
+        validate_complete = contents.split("validate_complete() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertNotIn("if ! (", validate_complete)
+        self.assertLess(
+            validate_complete.index("set +e\n  ("),
+            validate_complete.index("replay_status=$?"),
+        )
+        self.assertLess(
+            validate_complete.index("replay_status=$?"),
+            validate_complete.index("if [[ $replay_status -ne 0 ]]"),
+        )
+        self.assertIn("validate_inputs || return 1", validate_complete)
+
+    def test_preflight_mode_rejects_all_other_argument_shapes(self) -> None:
+        for arguments in (("--unknown",), ("--preflight-only", "extra")):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [SCRIPT, *arguments],
+                    cwd=PROJECT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("Usage:", result.stderr)
 
 
 if __name__ == "__main__":

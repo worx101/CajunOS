@@ -307,6 +307,86 @@ def reject_unsafe_checkout_mode(metadata, relative):
         fail(f"tree contains a world-writable checkout entry: {relative}")
 
 
+def validate_selected_tools(tools_root, selected_prefix, binutils_prefix, target):
+    tools_root = Path(tools_root)
+    selected_prefix = Path(selected_prefix)
+    binutils_prefix = Path(binutils_prefix)
+    if "/" in target or target in {"", ".", ".."}:
+        fail("selected-tool target is unsafe")
+    for path, label in (
+        (tools_root, "tools root"),
+        (selected_prefix, "selected prefix"),
+        (binutils_prefix, "Binutils prefix"),
+    ):
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+            fail(f"selected-tool {label} is not a real directory")
+    resolved_root = tools_root.resolve(strict=True)
+    for path, label in (
+        (selected_prefix, "selected prefix"),
+        (binutils_prefix, "Binutils prefix"),
+    ):
+        try:
+            path.resolve(strict=True).relative_to(resolved_root)
+        except (FileNotFoundError, RuntimeError, ValueError):
+            fail(f"selected-tool {label} escapes the tools root")
+
+    def plain_executable(path, links, label):
+        metadata = path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != links
+            or stat.S_IMODE(metadata.st_mode) != 0o755
+            or not os.access(path, os.X_OK)
+        ):
+            fail(
+                f"selected-tool {label} is not a plain mode-0755 "
+                f"{links}-link executable"
+            )
+        return metadata
+
+    gcc = selected_prefix / "bin" / f"{target}-gcc"
+    gcc_metadata = plain_executable(gcc, 1, "GCC driver")
+    if gcc.resolve(strict=True) != gcc:
+        fail("selected-tool GCC driver is not resident in the selected prefix")
+
+    evidence = {
+        "gcc": {
+            "path": str(gcc),
+            "links": gcc_metadata.st_nlink,
+            "mode": "0755",
+        }
+    }
+    for name in ("strip", "readelf"):
+        reported = selected_prefix / "bin" / f"{target}-{name}"
+        primary = binutils_prefix / "bin" / f"{target}-{name}"
+        alias = binutils_prefix / target / "bin" / name
+        link_metadata = reported.lstat()
+        if not stat.S_ISLNK(link_metadata.st_mode) or link_metadata.st_nlink != 1:
+            fail(f"selected-tool reported {name} is not a single-link symlink")
+        expected_target = os.path.relpath(primary, reported.parent)
+        if os.readlink(reported) != expected_target:
+            fail(f"selected-tool reported {name} has the wrong relative target")
+        if reported.resolve(strict=True) != primary:
+            fail(f"selected-tool reported {name} does not resolve to Binutils")
+        primary_metadata = plain_executable(primary, 2, f"Binutils {name}")
+        alias_metadata = plain_executable(alias, 2, f"Binutils {name} alias")
+        if (
+            primary_metadata.st_dev != alias_metadata.st_dev
+            or primary_metadata.st_ino != alias_metadata.st_ino
+        ):
+            fail(f"selected-tool Binutils {name} aliases are not one inode")
+        evidence[name] = {
+            "reported": str(reported),
+            "target": expected_target,
+            "primary": str(primary),
+            "alias": str(alias),
+            "links": 2,
+            "mode": "0755",
+        }
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+
+
 def canonical_overlay_inventory(root):
     root = Path(root)
     root_metadata = root.lstat()
@@ -676,8 +756,9 @@ def validate_receipt(receipt_path, artifact_path, build_id, *pairs):
             "glibc_helper_sha256", "kernel_fragment_sha256",
             "busybox_fragment_sha256", "overlay_digest",
         },
-        "dependencies": {"gcc", "glibc"},
+        "dependencies": {"gcc", "binutils", "glibc"},
         "dependencies.gcc": {"build_id", "prefix", "receipt", "receipt_sha256"},
+        "dependencies.binutils": {"build_id", "prefix", "receipt", "receipt_sha256"},
         "dependencies.glibc": {"build_id", "snapshot", "receipt", "receipt_sha256"},
         "kernel": {"version", "release", "modules", "root_selector"},
         "bootloader": {"name", "platform", "firmware", "installer", "host_grub_used"},
@@ -781,6 +862,13 @@ elif command == "canonicalize-root":
     if len(arguments) != 1:
         fail("canonicalize-root requires ROOT")
     canonicalize_root(arguments[0])
+elif command == "validate-selected-tools":
+    if len(arguments) != 4:
+        fail(
+            "validate-selected-tools requires TOOLS_ROOT SELECTED_PREFIX "
+            "BINUTILS_PREFIX TARGET"
+        )
+    validate_selected_tools(*arguments)
 elif command == "compare-json":
     if len(arguments) != 2:
         fail("compare-json requires FIRST SECOND")
@@ -817,6 +905,14 @@ elif command == "build-id":
 else:
     fail(f"unknown internal command: {command}")
 PY
+fi
+
+preflight_only=0
+if [[ $# -eq 1 && $1 == --preflight-only ]]; then
+  preflight_only=1
+elif [[ $# -ne 0 ]]; then
+  echo "Usage: $0 [--preflight-only]" >&2
+  exit 64
 fi
 
 for variable in \
@@ -997,31 +1093,45 @@ kernel_version=$(make -s -C "$linux_source" kernelversion)
 kernel_release=$kernel_version-cajunos+
 build_timestamp=$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S +0000')
 
-tools_prefix=$(readlink -f -- "$tools_root/current")
 cohort_id=${bootstrap_digest#sha256:}
 cohort_id=${cohort_id:0:16}
+tools_selector=$tools_root/current
 sysroot_selector=$sysroot_root/$cohort_id/current
-glibc_snapshot=$(readlink -f -- "$sysroot_selector")
+initial_tools_selector=$(readlink -- "$tools_selector")
+initial_sysroot_selector=$(readlink -- "$sysroot_selector")
+[[ $initial_tools_selector =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ \
+   && $initial_sysroot_selector =~ ^snapshots/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+  echo "Selected dependency selector target is unsafe" >&2
+  exit 80
+}
+tools_prefix=$(readlink -f -- "$tools_root/$initial_tools_selector")
+glibc_snapshot=$(readlink -f -- \
+  "$sysroot_root/$cohort_id/$initial_sysroot_selector")
+
+selector_state_is_initial() {
+  [[ $(readlink -- "$tools_selector") == "$initial_tools_selector" \
+     && $(readlink -f -- "$tools_selector") == "$tools_prefix" \
+     && $(readlink -- "$sysroot_selector") == "$initial_sysroot_selector" \
+     && $(readlink -f -- "$sysroot_selector") == "$glibc_snapshot" ]]
+}
+selector_state_is_initial || {
+  echo "Selected dependency changed while resolving selectors" >&2
+  exit 80
+}
+[[ $tools_prefix == "$tools_root/"* \
+   && $glibc_snapshot == "$sysroot_root/$cohort_id/snapshots/"* \
+   && $tools_prefix == "$tools_root/$initial_tools_selector" \
+   && $glibc_snapshot == \
+      "$sysroot_root/$cohort_id/$initial_sysroot_selector" ]] || {
+  echo "Selected dependency resolves outside its managed prefix" >&2
+  exit 80
+}
 for path in "$tools_prefix" "$glibc_snapshot"; do
   [[ -d $path && ! -L $path ]] || {
     echo "Selected immutable dependency is unavailable: $path" >&2
     exit 80
   }
 done
-gcc_driver_reported=$tools_prefix/bin/$target-gcc
-strip_driver_reported=$tools_prefix/bin/$target-strip
-readelf_driver_reported=$tools_prefix/bin/$target-readelf
-for tool in "$gcc_driver_reported" "$strip_driver_reported" "$readelf_driver_reported"; do
-  resolved=$(readlink -f -- "$tool")
-  [[ -x $tool && $resolved == "$tools_root/"* && -f $resolved && ! -L $resolved \
-     && $(stat -c %h "$resolved") == 1 ]] || {
-    echo "Selected toolchain executable escapes its sealed tools roots: $tool" >&2
-    exit 80
-  }
-done
-gcc_driver=$(readlink -f -- "$gcc_driver_reported")
-strip_driver=$(readlink -f -- "$strip_driver_reported")
-readelf_driver=$(readlink -f -- "$readelf_driver_reported")
 busybox_extra_cflags="--sysroot=$glibc_snapshot -march=x86-64-v2 -mtune=generic -fdebug-prefix-map=$cajunos_root=/usr/src/cajunos"
 busybox_extra_ldflags="--sysroot=$glibc_snapshot -static"
 tools_build_id=$(basename -- "$tools_prefix")
@@ -1042,28 +1152,133 @@ for license_root in "$tools_licenses" "$glibc_licenses"; do
     exit 80
   }
 done
-mapfile -t dependency_receipt_values < <(python3 - "$tools_receipt" "$glibc_receipt" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as stream:
-    gcc = json.load(stream)
-with open(sys.argv[2], encoding="utf-8") as stream:
-    glibc = json.load(stream)
+tools_receipt_sha256=$(sha256sum "$tools_receipt" | awk '{print $1}')
+glibc_receipt_sha256=$(sha256sum "$glibc_receipt" | awk '{print $1}')
+if ! dependency_receipt_output=$(python3 - \
+  "$tools_receipt" "$glibc_receipt" "$tools_root" "$artifacts_root" \
+  "$target" "$binutils_commit" "$binutils_tree" "$binutils_repository" \
+  "$bootstrap_digest" "$bootstrap_auth" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+(
+    tools_receipt, glibc_receipt, tools_root, artifacts_root, target,
+    commit, tree, repository, source_digest, source_authentication,
+) = sys.argv[1:]
+
+
+def load(path):
+    with Path(path).open(encoding="utf-8") as stream:
+        return json.load(stream)
+
+
+gcc = load(tools_receipt)
+glibc = load(glibc_receipt)
+dependency = gcc.get("dependencies", {}).get("binutils")
+expected_keys = {
+    "build_id", "prefix", "receipt", "receipt_sha256",
+    "source_commit", "source_tree", "source_repository",
+}
+if not isinstance(dependency, dict) or set(dependency) != expected_keys:
+    raise SystemExit("complete GCC has an invalid Binutils dependency topology")
+build_id = dependency["build_id"]
+if not isinstance(build_id, str) or not re.fullmatch(
+    r"binutils-stage1-[A-Za-z0-9._-]+", build_id
+):
+    raise SystemExit("complete GCC has an unsafe Binutils build ID")
+prefix = str(Path(tools_root) / build_id)
+receipt_path = str(Path(artifacts_root) / build_id / "receipt.json")
+if dependency != {
+    "build_id": build_id,
+    "prefix": prefix,
+    "receipt": receipt_path,
+    "receipt_sha256": dependency["receipt_sha256"],
+    "source_commit": commit,
+    "source_tree": tree,
+    "source_repository": repository,
+}:
+    raise SystemExit("complete GCC Binutils dependency does not match the lock")
+receipt = Path(receipt_path)
+metadata = receipt.lstat()
+if (
+    not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_nlink != 1
+    or stat.S_IMODE(metadata.st_mode) != 0o644
+):
+    raise SystemExit("Binutils receipt is not a plain mode-0644 single-link file")
+with receipt.open("rb") as stream:
+    receipt_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+if receipt_sha256 != dependency["receipt_sha256"]:
+    raise SystemExit("Binutils receipt hash does not match complete GCC")
+binutils = load(receipt)
+if (
+    binutils.get("schema") != 1
+    or binutils.get("build_id") != build_id
+    or binutils.get("component") != "binutils"
+    or binutils.get("stage") != "stage1"
+    or binutils.get("source_commit") != commit
+    or binutils.get("source_tree") != tree
+    or binutils.get("source_set_digest") != source_digest
+    or binutils.get("source_authentication") != source_authentication
+    or binutils.get("target") != target
+    or binutils.get("prefix") != prefix
+    or binutils.get("source_repository") is not None
+):
+    raise SystemExit("Binutils receipt identity or provenance is invalid")
+installed_entries = binutils.get("installed_entries")
+if not isinstance(installed_entries, dict) or not installed_entries:
+    raise SystemExit("Binutils receipt lacks its installed inventory")
+inventory_digest = hashlib.sha256(json.dumps(
+    installed_entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+).encode("utf-8")).hexdigest()
 print(gcc.get("base_prefix", ""))
 print(gcc.get("gcc_version", ""))
 print(gcc.get("sysroot_snapshot", ""))
 print(glibc.get("base_snapshot", ""))
+print(build_id)
+print(prefix)
+print(receipt_path)
+print(receipt_sha256)
+print(inventory_digest)
 PY
-)
+); then
+  echo "Selected dependency receipt cohort is invalid" >&2
+  exit 80
+fi
+mapfile -t dependency_receipt_values <<<"$dependency_receipt_output"
+[[ ${#dependency_receipt_values[@]} -eq 9 ]] || {
+  echo "Selected dependency receipt cohort is incomplete" >&2
+  exit 80
+}
 gcc_base_prefix=${dependency_receipt_values[0]}
 gcc_version=${dependency_receipt_values[1]}
 gcc_receipt_sysroot=${dependency_receipt_values[2]}
 glibc_base_snapshot=${dependency_receipt_values[3]}
+binutils_build_id=${dependency_receipt_values[4]}
+binutils_prefix=${dependency_receipt_values[5]}
+binutils_receipt=${dependency_receipt_values[6]}
+binutils_receipt_sha256=${dependency_receipt_values[7]}
+binutils_inventory_digest=${dependency_receipt_values[8]}
+[[ $(sha256sum "$tools_receipt" | awk '{print $1}') == "$tools_receipt_sha256" \
+   && $(sha256sum "$glibc_receipt" | awk '{print $1}') == "$glibc_receipt_sha256" ]] || {
+  echo "Selected dependency receipt changed while resolving its cohort" >&2
+  exit 80
+}
 [[ $gcc_base_prefix == "$tools_root/"* \
    && -d $gcc_base_prefix && ! -L $gcc_base_prefix ]] || {
   echo "GCC receipt base is not confined to the sealed tools root" >&2
   exit 80
 }
-[[ $glibc_base_snapshot == "$sysroot_root/$cohort_id/snapshots/"* \
+glibc_base_snapshot_name=$(basename -- "$glibc_base_snapshot")
+[[ $glibc_base_snapshot_name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ \
+   && $glibc_base_snapshot == \
+      "$sysroot_root/$cohort_id/snapshots/$glibc_base_snapshot_name" \
+   && $(readlink -f -- "$glibc_base_snapshot") == "$glibc_base_snapshot" \
    && -d $glibc_base_snapshot && ! -L $glibc_base_snapshot ]] || {
   echo "glibc receipt base is not confined to the sealed cohort snapshots" >&2
   exit 80
@@ -1074,7 +1289,56 @@ glibc_base_snapshot=${dependency_receipt_values[3]}
 }
 gcc_helper_sha256=$(sha256sum "$gcc_helper" | awk '{print $1}')
 glibc_helper_sha256=$(sha256sum "$glibc_helper" | awk '{print $1}')
+validate_binutils_dependency() {
+  selector_state_is_initial || {
+    echo "Dependency selector changed before Binutils inventory replay" >&2
+    return 1
+  }
+  "$gcc_helper" --internal-python dependency-inventory \
+    "$binutils_prefix" "$tools_root" | \
+    python3 -c '
+import hashlib
+import json
+from pathlib import Path
+import stat
+import sys
+
+receipt_path = Path(sys.argv[1])
+expected_receipt_sha256 = sys.argv[2]
+expected_inventory_digest = sys.argv[3]
+receipt_metadata = receipt_path.lstat()
+if (
+    not stat.S_ISREG(receipt_metadata.st_mode)
+    or stat.S_IMODE(receipt_metadata.st_mode) != 0o644
+    or receipt_metadata.st_nlink != 1
+):
+    raise SystemExit("live Binutils receipt topology changed")
+raw = receipt_path.read_bytes()
+if hashlib.sha256(raw).hexdigest() != expected_receipt_sha256:
+    raise SystemExit("live Binutils receipt hash changed")
+receipt = json.loads(raw)
+expected = receipt.get("installed_entries")
+live = json.load(sys.stdin)
+digest = hashlib.sha256(json.dumps(
+    live, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+).encode("utf-8")).hexdigest()
+if live != expected or digest != expected_inventory_digest:
+    raise SystemExit("live Binutils dependency inventory differs from its receipt")
+' "$binutils_receipt" "$binutils_receipt_sha256" "$binutils_inventory_digest" \
+    || return 1
+}
+
 validate_live_dependencies() {
+  # This replay is the authority for hardlink confinement.  It must precede
+  # validate-completed because that semantic replay executes compiler probes.
+  validate_binutils_dependency || return 1
+  "$script_path" --internal-python validate-selected-tools \
+    "$tools_root" "$tools_prefix" "$binutils_prefix" "$target" >/dev/null \
+    || return 1
+  selector_state_is_initial || {
+    echo "Dependency selector changed before completed receipt replay" >&2
+    return 1
+  }
   "$gcc_helper" --internal-python validate-completed \
     "$tools_receipt" "$tools_prefix" "$gcc_base_prefix" "$tools_root" \
     "$target" "$gcc_version" \
@@ -1082,26 +1346,34 @@ validate_live_dependencies() {
     source_commit "$gcc_commit" source_tree "$gcc_tree" \
     source_repository "$gcc_repository" source_set_digest "$bootstrap_digest" \
     source_authentication "$bootstrap_auth" target "$target" \
-    prefix "$tools_prefix" sysroot_snapshot "$glibc_snapshot" >/dev/null
+    prefix "$tools_prefix" sysroot_snapshot "$glibc_snapshot" \
+    dependencies.binutils.build_id "$binutils_build_id" \
+    dependencies.binutils.prefix "$binutils_prefix" \
+    dependencies.binutils.receipt "$binutils_receipt" \
+    dependencies.binutils.receipt_sha256 "$binutils_receipt_sha256" >/dev/null \
+    || return 1
   "$glibc_helper" --internal-python validate-completed \
     "$glibc_receipt" "$glibc_snapshot" "$glibc_base_snapshot" \
     schema 1 component glibc stage complete build_id "$glibc_build_id" \
     source_commit "$glibc_commit" source_tree "$glibc_tree" \
     source_repository "$glibc_repository" source_set_digest "$bootstrap_digest" \
     source_authentication "$bootstrap_auth" target "$target" \
-    snapshot "$glibc_snapshot" >/dev/null
+    snapshot "$glibc_snapshot" >/dev/null || return 1
+  selector_state_is_initial || {
+    echo "Dependency selector changed during completed receipt replay" >&2
+    return 1
+  }
 }
-validate_live_dependencies
 
-initial_tools_selector=$(readlink -- "$tools_root/current")
-initial_sysroot_selector=$(readlink -- "$sysroot_selector")
+gcc_driver=$tools_prefix/bin/$target-gcc
+strip_driver=$binutils_prefix/bin/$target-strip
+readelf_driver=$binutils_prefix/bin/$target-readelf
+
 recipe_sha256=$(sha256sum "$script_path" | awk '{print $1}')
 kernel_fragment_sha256=$(sha256sum "$kernel_fragment" | awk '{print $1}')
 busybox_fragment_sha256=$(sha256sum "$busybox_fragment" | awk '{print $1}')
 overlay_inventory=$("$script_path" --internal-python overlay-inventory "$overlay")
 overlay_digest=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])' <<<"$overlay_inventory")
-tools_receipt_sha256=$(sha256sum "$tools_receipt" | awk '{print $1}')
-glibc_receipt_sha256=$(sha256sum "$glibc_receipt" | awk '{print $1}')
 
 qemu_path=$(readlink -f -- "$(command -v qemu-system-x86_64)")
 qemu_bios=/usr/share/seabios/bios-256k.bin
@@ -1144,6 +1416,7 @@ build_id=$("$script_path" --internal-python build-id "$linux_commit" \
   busybox_extra_cflags "$busybox_extra_cflags" \
   busybox_extra_ldflags "$busybox_extra_ldflags" \
   tools_receipt_sha256 "$tools_receipt_sha256" \
+  binutils_receipt_sha256 "$binutils_receipt_sha256" \
   glibc_receipt_sha256 "$glibc_receipt_sha256" \
   host_contract_sha256 "$host_contract_sha256")
 
@@ -1166,9 +1439,12 @@ positive_cmdline="root=PARTUUID=$root_guid rw rootwait console=ttyS0,115200 earl
 negative_cmdline="root=PARTUUID=$root_guid rw rootwait console=ttyS0,115200 earlycon=uart8250,io,0x3f8,115200n8 panic=-1 cajunos.base_system=0"
 
 validate_inputs() {
-  "$project_root/scripts/fetch.py" validate --root "$cajunos_root" --json >/dev/null
+  selector_state_is_initial || return 1
+  "$project_root/scripts/fetch.py" validate --root "$cajunos_root" --json \
+    >/dev/null || return 1
   "$project_root/scripts/fetch.py" validate --root "$cajunos_root" \
-    --manifest "$system_manifest" --lock "$system_lock" --json >/dev/null
+    --manifest "$system_manifest" --lock "$system_lock" --json >/dev/null \
+    || return 1
   if ! [[ -z $(git -C "$project_root" status --porcelain) \
      && -f $qemu_bios && ! -L $qemu_bios \
      && $(git -C "$project_root" rev-parse HEAD) == "$orchestration_commit" \
@@ -1179,13 +1455,13 @@ validate_inputs() {
      && $(sha256sum "$kernel_fragment" | awk '{print $1}') == "$kernel_fragment_sha256" \
      && $(sha256sum "$busybox_fragment" | awk '{print $1}') == "$busybox_fragment_sha256" \
      && $(sha256sum "$tools_receipt" | awk '{print $1}') == "$tools_receipt_sha256" \
+     && $(sha256sum "$binutils_receipt" | awk '{print $1}') == "$binutils_receipt_sha256" \
      && $(sha256sum "$glibc_receipt" | awk '{print $1}') == "$glibc_receipt_sha256" \
-     && $(calculate_host_contract) == "$host_contract_sha256" \
-     && $(readlink -- "$tools_root/current") == "$initial_tools_selector" \
-     && $(readlink -- "$sysroot_selector") == "$initial_sysroot_selector" ]]; then
+     && $(calculate_host_contract) == "$host_contract_sha256" ]]; then
     return 1
   fi
-  validate_live_dependencies
+  validate_live_dependencies || return 1
+  selector_state_is_initial || return 1
 }
 
 qemu_common=(
@@ -1267,6 +1543,10 @@ validate_receipt_contract() {
     dependencies.gcc.build_id "$tools_build_id" dependencies.gcc.prefix "$tools_prefix" \
     dependencies.gcc.receipt "$tools_receipt" \
     dependencies.gcc.receipt_sha256 "$tools_receipt_sha256" \
+    dependencies.binutils.build_id "$binutils_build_id" \
+    dependencies.binutils.prefix "$binutils_prefix" \
+    dependencies.binutils.receipt "$binutils_receipt" \
+    dependencies.binutils.receipt_sha256 "$binutils_receipt_sha256" \
     dependencies.glibc.build_id "$glibc_build_id" \
     dependencies.glibc.snapshot "$glibc_snapshot" \
     dependencies.glibc.receipt "$glibc_receipt" \
@@ -1345,8 +1625,13 @@ validate_complete() {
   validate_inputs || return 1
   validate_candidate "$artifact_final" "$build_final"
   local replay=$work_root/.replay-$build_id-$$
+  local replay_status
   mkdir -- "$replay"
-  if ! (
+  # Run the replay subshell as an ordinary command.  A negated conditional
+  # suppresses errexit throughout its subshell and can let an early replay
+  # failure be hidden by a later successful command.
+  set +e
+  (
     set -Eeuo pipefail
     "$script_path" --internal-python inventory "$build_final/root-a" >"$replay/root-a.json"
     "$script_path" --internal-python inventory "$build_final/root-b" >"$replay/root-b.json"
@@ -1358,12 +1643,15 @@ validate_complete() {
       "$replay/positive.raw" "$replay/positive.normalized"
     run_qemu negative "$artifact_final/boot" \
       "$replay/negative.raw" "$replay/negative.normalized"
-  ); then
+  )
+  replay_status=$?
+  set -e
+  if [[ $replay_status -ne 0 ]]; then
     mv -T -- "$replay" "$work_root/.failed-replay-$build_id-$$"
     return 1
   fi
   rm -rf -- "$replay"
-  validate_inputs
+  validate_inputs || return 1
 }
 
 exec 9>"$work_root/.cajunos-build.lock"
@@ -1371,6 +1659,12 @@ flock -n 9 || {
   echo "Another CajunOS build owns the global build lock" >&2
   exit 83
 }
+
+if [[ $preflight_only == 1 ]]; then
+  validate_inputs
+  echo "CAJUNOS_BASE_SYSTEM_PREFLIGHT_OK build_id=$build_id"
+  exit 0
+fi
 
 if [[ -d $build_final && ! -L $build_final \
    && -d $artifact_final && ! -L $artifact_final \
@@ -1604,6 +1898,11 @@ EOF
     "$disk" "$disk_guid" "$bios_guid" "$root_guid" "$root_first_sector" >/dev/null
 }
 
+# Recheck every selector, receipt, inventory, and host input under the global
+# build lock at the last point before the first build.  This is the normal new
+# build path's first selected-tool execution; preflight and completed-result
+# paths use the same locked barrier, and the prepublication call remains final.
+validate_inputs
 build_kernel a
 build_kernel b
 cmp -- "$temporary_root/bzImage-a" "$temporary_root/bzImage-b"
@@ -1689,6 +1988,10 @@ export CAJUNOS_RECEIPT_TOOLS_ID=$tools_build_id
 export CAJUNOS_RECEIPT_TOOLS_PREFIX=$tools_prefix
 export CAJUNOS_RECEIPT_TOOLS_RECEIPT=$tools_receipt
 export CAJUNOS_RECEIPT_TOOLS_RECEIPT_SHA256=$tools_receipt_sha256
+export CAJUNOS_RECEIPT_BINUTILS_ID=$binutils_build_id
+export CAJUNOS_RECEIPT_BINUTILS_PREFIX=$binutils_prefix
+export CAJUNOS_RECEIPT_BINUTILS_RECEIPT=$binutils_receipt
+export CAJUNOS_RECEIPT_BINUTILS_RECEIPT_SHA256=$binutils_receipt_sha256
 export CAJUNOS_RECEIPT_GLIBC_ID=$glibc_build_id
 export CAJUNOS_RECEIPT_GLIBC_SNAPSHOT=$glibc_snapshot
 export CAJUNOS_RECEIPT_GLIBC_RECEIPT=$glibc_receipt
@@ -1769,6 +2072,12 @@ value = {
             "prefix": e["CAJUNOS_RECEIPT_TOOLS_PREFIX"],
             "receipt": e["CAJUNOS_RECEIPT_TOOLS_RECEIPT"],
             "receipt_sha256": e["CAJUNOS_RECEIPT_TOOLS_RECEIPT_SHA256"],
+        },
+        "binutils": {
+            "build_id": e["CAJUNOS_RECEIPT_BINUTILS_ID"],
+            "prefix": e["CAJUNOS_RECEIPT_BINUTILS_PREFIX"],
+            "receipt": e["CAJUNOS_RECEIPT_BINUTILS_RECEIPT"],
+            "receipt_sha256": e["CAJUNOS_RECEIPT_BINUTILS_RECEIPT_SHA256"],
         },
         "glibc": {
             "build_id": e["CAJUNOS_RECEIPT_GLIBC_ID"],
