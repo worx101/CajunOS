@@ -319,8 +319,28 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertLess(kernel.index("CONFIG_EXPERT=y"), kernel.index("CONFIG_VT=n"))
 
         busybox = BUSYBOX_FRAGMENT.read_text(encoding="utf-8")
+        self.assertIn(
+            "noninteractively with stdin at EOF; this revision has no olddefconfig.",
+            busybox,
+        )
         self.assertIn("CONFIG_STATIC=y", busybox)
+        self.assertIn("CONFIG_BUSYBOX=y", busybox)
+        self.assertIn("CONFIG_FEATURE_INSTALLER=y", busybox)
+        self.assertIn(
+            "# The locked revision makes FEATURE_INSTALLER depend directly on BUSYBOX.",
+            busybox,
+        )
         self.assertIn("CONFIG_TC=n", busybox)
+        self.assertIn("CONFIG_SWAPON=y", busybox)
+        self.assertIn("CONFIG_SWAPOFF=y", busybox)
+        self.assertNotIn("CONFIG_SWAPONOFF", busybox)
+        self.assertIn("CONFIG_USE_BB_CRYPT=y", busybox)
+        self.assertIn("CONFIG_USE_BB_CRYPT_SHA=y", busybox)
+        self.assertIn("CONFIG_USE_BB_CRYPT_YES=n", busybox)
+        self.assertLess(
+            busybox.index("CONFIG_USE_BB_CRYPT=y"),
+            busybox.index("CONFIG_USE_BB_CRYPT_SHA=y"),
+        )
         self.assertIn("CONFIG_UDHCPC=y", busybox)
         self.assertIn('CONFIG_UDHCPC_DEFAULT_SCRIPT="/etc/udhcpc/default.script"', busybox)
 
@@ -336,10 +356,79 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assert_rejects("validate-kernel-config", kernel)
 
         busybox = self.temporary_root / "busybox.config"
-        busybox.write_text(BUSYBOX_FRAGMENT.read_text(encoding="utf-8"), encoding="utf-8")
+        busybox_contract = BUSYBOX_FRAGMENT.read_text(encoding="utf-8")
+        busybox.write_text(busybox_contract, encoding="utf-8")
         self.assert_accepts("validate-busybox-config", busybox)
-        busybox.write_text(busybox.read_text().replace("CONFIG_TC=n", "CONFIG_TC=y"))
+        for symbol in (
+            "CONFIG_BUSYBOX", "CONFIG_FEATURE_INSTALLER",
+            "CONFIG_SWAPON", "CONFIG_SWAPOFF",
+            "CONFIG_USE_BB_CRYPT", "CONFIG_USE_BB_CRYPT_SHA",
+        ):
+            with self.subTest(symbol=symbol):
+                busybox.write_text(
+                    busybox_contract.replace(f"{symbol}=y", f"{symbol}=n"),
+                    encoding="utf-8",
+                )
+                self.assert_rejects("validate-busybox-config", busybox)
+        busybox.write_text(
+            busybox_contract.replace("CONFIG_TC=n", "CONFIG_TC=y"),
+            encoding="utf-8",
+        )
         self.assert_rejects("validate-busybox-config", busybox)
+        busybox.write_text(
+            busybox_contract.replace(
+                "CONFIG_USE_BB_CRYPT_YES=n", "CONFIG_USE_BB_CRYPT_YES=y"
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejects("validate-busybox-config", busybox)
+
+    def test_kconfig_resolution_is_exact_and_fail_closed(self) -> None:
+        fragment = self.temporary_root / "fragment"
+        resolved = self.temporary_root / "resolved"
+        fragment.write_text("CONFIG_ONE=y\nCONFIG_TWO=n\n", encoding="utf-8")
+        resolved.write_text(
+            "CONFIG_ONE=y\n# CONFIG_TWO is not set\nCONFIG_THREE=y\n",
+            encoding="utf-8",
+        )
+        self.assert_accepts("validate-kconfig-resolution", fragment, resolved)
+        resolved.write_text("# CONFIG_TWO is not set\n", encoding="utf-8")
+        result = self.internal("validate-kconfig-resolution", fragment, resolved)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("omitted fragment symbol: CONFIG_ONE", result.stderr)
+        resolved.write_text("CONFIG_ONE=n\n# CONFIG_TWO is not set\n", encoding="utf-8")
+        result = self.internal("validate-kconfig-resolution", fragment, resolved)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("changed fragment symbol CONFIG_ONE", result.stderr)
+
+    def test_busybox_kconfig_resolution_uses_eof_oldconfig(self) -> None:
+        contents = SCRIPT.read_text(encoding="utf-8")
+        recipe = contents.split("build_busybox() {", 1)[1].split("\n}", 1)[0]
+        resolver = 'oldconfig \\\n      </dev/null >"$resolver_log" 2>&1'
+        self.assertIn(resolver, recipe)
+        self.assertNotIn("olddefconfig", recipe)
+        self.assertIn("if ! env -i", recipe)
+        self.assertIn(
+            "warning: trying to assign nonexistent symbol", recipe
+        )
+        self.assertIn("|| warning_status=$?", recipe)
+        self.assertIn("case $warning_status in", recipe)
+        self.assertLess(recipe.index("allnoconfig"), recipe.index("merge-kconfig"))
+        self.assertLess(recipe.index("merge-kconfig"), recipe.index(resolver))
+        self.assertLess(
+            recipe.index(resolver), recipe.index("validate-kconfig-resolution")
+        )
+        self.assertLess(
+            recipe.index("validate-kconfig-resolution"),
+            recipe.index("validate-busybox-config"),
+        )
+
+        documentation = (PROJECT / "docs/bootstrap.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "using explicit stdin EOF because that revision has no `olddefconfig`",
+            documentation,
+        )
+        self.assertIn("rejects any\nnonexistent-symbol assignment warning", documentation)
 
     def test_headless_vt_resolved_contract_requires_expert(self) -> None:
         resolved = (

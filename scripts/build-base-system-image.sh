@@ -113,6 +113,23 @@ def merge_kconfig(base_path, fragment_path):
     atomic_text(base_path, "\n".join(output) + "\n")
 
 
+def validate_kconfig_resolution(fragment_path, resolved_path):
+    fragment = parse_kconfig(fragment_path)
+    resolved = parse_kconfig(resolved_path)
+    if not fragment:
+        fail("Kconfig fragment is empty")
+    for key, wanted in sorted(fragment.items()):
+        if key not in resolved:
+            fail(f"resolved configuration omitted fragment symbol: {key}")
+        actual = resolved[key]
+        if actual != wanted:
+            fail(
+                f"resolved configuration changed fragment symbol {key}: "
+                f"wanted {wanted!r}, got {actual!r}"
+            )
+    print(json.dumps({"fragment_symbols": len(fragment)}, sort_keys=True))
+
+
 def require_config(path, required_y, required_n, expected):
     values = parse_kconfig(path)
     for key in sorted(required_y):
@@ -167,9 +184,12 @@ def validate_kernel_config(path):
 
 def validate_busybox_config(path):
     required_y = {
-        "CONFIG_STATIC", "CONFIG_INSTALL_APPLET_SYMLINKS", "CONFIG_ASH", "CONFIG_SH_IS_ASH", "CONFIG_INIT",
+        "CONFIG_STATIC", "CONFIG_BUSYBOX", "CONFIG_FEATURE_INSTALLER",
+        "CONFIG_INSTALL_APPLET_SYMLINKS", "CONFIG_ASH", "CONFIG_SH_IS_ASH", "CONFIG_INIT",
         "CONFIG_FEATURE_USE_INITTAB", "CONFIG_GETTY", "CONFIG_LOGIN",
+        "CONFIG_USE_BB_CRYPT", "CONFIG_USE_BB_CRYPT_SHA",
         "CONFIG_HALT", "CONFIG_MOUNT", "CONFIG_UMOUNT", "CONFIG_MDEV",
+        "CONFIG_SWAPON", "CONFIG_SWAPOFF",
         "CONFIG_HOSTNAME", "CONFIG_IP", "CONFIG_FEATURE_IP_ADDRESS",
         "CONFIG_FEATURE_IP_LINK", "CONFIG_FEATURE_IP_ROUTE", "CONFIG_UDHCPC",
         "CONFIG_CAT", "CONFIG_ECHO", "CONFIG_GREP", "CONFIG_MKDIR",
@@ -178,6 +198,7 @@ def validate_busybox_config(path):
     required_n = {
         "CONFIG_TC", "CONFIG_UDHCPC6", "CONFIG_FEATURE_MOUNT_HELPERS",
         "CONFIG_FEATURE_MOUNT_CIFS", "CONFIG_FEATURE_SUID",
+        "CONFIG_USE_BB_CRYPT_YES",
         "CONFIG_INSTALL_APPLET_HARDLINKS", "CONFIG_INSTALL_APPLET_SCRIPT_WRAPPERS",
         "CONFIG_INSTALL_APPLET_DONT",
     }
@@ -843,6 +864,10 @@ if command == "merge-kconfig":
     if len(arguments) != 2:
         fail("merge-kconfig requires CONFIG FRAGMENT")
     merge_kconfig(*arguments)
+elif command == "validate-kconfig-resolution":
+    if len(arguments) != 2:
+        fail("validate-kconfig-resolution requires FRAGMENT CONFIG")
+    validate_kconfig_resolution(*arguments)
 elif command == "validate-kernel-config":
     if len(arguments) != 1:
         fail("validate-kernel-config requires CONFIG")
@@ -1753,15 +1778,41 @@ build_busybox() {
   local label=$1
   local build=$temporary_root/busybox-$label
   local install_root=$temporary_root/busybox-install-$label
+  local resolver_log=$build/oldconfig.log
+  local warning_status
   mkdir -- "$build" "$install_root"
   env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     make -s -C "$busybox_source" O="$build" ARCH=x86_64 \
-      CROSS_COMPILE="$tools_prefix/bin/$target-" allnoconfig
-  "$script_path" --internal-python merge-kconfig "$build/.config" "$busybox_fragment"
-  env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+      CROSS_COMPILE="$tools_prefix/bin/$target-" allnoconfig || return 1
+  "$script_path" --internal-python merge-kconfig \
+    "$build/.config" "$busybox_fragment" || return 1
+  if ! env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     make -s -C "$busybox_source" O="$build" ARCH=x86_64 \
-      CROSS_COMPILE="$tools_prefix/bin/$target-" olddefconfig
-  "$script_path" --internal-python validate-busybox-config "$build/.config" >/dev/null
+      CROSS_COMPILE="$tools_prefix/bin/$target-" oldconfig \
+      </dev/null >"$resolver_log" 2>&1; then
+    cat -- "$resolver_log" >&2 || true
+    return 1
+  fi
+  cat -- "$resolver_log" || return 1
+  warning_status=0
+  grep -Fq -- 'warning: trying to assign nonexistent symbol' "$resolver_log" \
+    || warning_status=$?
+  case $warning_status in
+    0)
+      echo "BusyBox fragment assigns a nonexistent locked-revision symbol" >&2
+      return 1
+      ;;
+    1) ;;
+    *)
+      echo "Failed to inspect BusyBox oldconfig output" >&2
+      return 1
+      ;;
+  esac
+  "$script_path" --internal-python validate-kconfig-resolution \
+    "$busybox_fragment" "$build/.config" >/dev/null || return 1
+  rm -- "$resolver_log" || return 1
+  "$script_path" --internal-python validate-busybox-config \
+    "$build/.config" >/dev/null || return 1
   env -i PATH="$PATH" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     KBUILD_BUILD_TIMESTAMP="$build_timestamp" \
     make -C "$busybox_source" O="$build" ARCH=x86_64 \

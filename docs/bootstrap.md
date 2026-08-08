@@ -228,9 +228,13 @@ and boot contracts without mutating the sealed toolchain or sysroot.
 sealed four-component bootstrap lock. BusyBox, GRUB, and the Gnulib revision
 named by GRUB's `bootstrap.conf` live in `manifests/base-system.json` and its
 reviewed exact-commit lock. The stage starts BusyBox from `allnoconfig`, applies
-the committed fragment, disables the `tc` applet that is incompatible with the
-locked Linux 7.2 UAPI, and carries both `ARCH` and `CROSS_COMPILE` through the
-install target so installation cannot rebuild with the Debian host compiler.
+the committed fragment, and resolves it with the locked revision's `oldconfig`
+using explicit stdin EOF because that revision has no `olddefconfig`. It disables
+the `tc` applet that is incompatible with the locked Linux 7.2 UAPI, rejects any
+nonexistent-symbol assignment warning, and carries both `ARCH` and `CROSS_COMPILE`
+through the install target so installation cannot rebuild with the Debian host
+compiler. Login uses BusyBox's internal crypt implementation with SHA-256/512
+support because the sealed static sysroot deliberately has no external libcrypt.
 
 The deployable kernel restores Q35/Proxmox essentials as built-ins: SMP, ACPI,
 PCI, GPT parsing, VirtIO block/SCSI/network, IPv4, ext4, devtmpfs, and serial.

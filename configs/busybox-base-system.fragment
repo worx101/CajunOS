@@ -1,7 +1,10 @@
 # CajunOS base-system BusyBox delta.  The build starts from allnoconfig,
-# applies this fragment exactly, and then runs olddefconfig.
+# applies this fragment exactly, then drives the locked revision's oldconfig
+# noninteractively with stdin at EOF; this revision has no olddefconfig.
 CONFIG_STATIC=y
 CONFIG_LFS=y
+# The locked revision makes FEATURE_INSTALLER depend directly on BUSYBOX.
+CONFIG_BUSYBOX=y
 CONFIG_FEATURE_INSTALLER=y
 CONFIG_INSTALL_APPLET_SYMLINKS=y
 CONFIG_INSTALL_APPLET_HARDLINKS=n
@@ -24,6 +27,10 @@ CONFIG_FEATURE_USE_INITTAB=y
 CONFIG_GETTY=y
 CONFIG_LOGIN=y
 CONFIG_FEATURE_SECURETTY=y
+# The sealed static sysroot has no external libcrypt; retain SHA-256/512 support internally.
+CONFIG_USE_BB_CRYPT=y
+CONFIG_USE_BB_CRYPT_SHA=y
+CONFIG_USE_BB_CRYPT_YES=n
 CONFIG_HALT=y
 CONFIG_KILL=y
 CONFIG_KILLALL5=y
@@ -36,7 +43,8 @@ CONFIG_FEATURE_MOUNT_HELPERS=n
 CONFIG_FEATURE_MOUNT_CIFS=n
 CONFIG_MDEV=y
 CONFIG_FEATURE_MDEV_CONF=y
-CONFIG_SWAPONOFF=y
+CONFIG_SWAPON=y
+CONFIG_SWAPOFF=y
 CONFIG_SWITCH_ROOT=y
 
 CONFIG_HOSTNAME=y
