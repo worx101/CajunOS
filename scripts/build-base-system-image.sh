@@ -646,27 +646,81 @@ def install_grub_raw(image_path, boot_path, core_path, core_lba, maximum_sectors
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
+EXT4_FEATURES = frozenset({
+    "ext_attr", "dir_index", "filetype", "extent", "64bit", "flex_bg",
+    "sparse_super", "large_file", "huge_file", "dir_nlink", "extra_isize",
+    "metadata_csum",
+})
+EXT4_EXACT_FIELDS = {
+    "Filesystem volume name": "CAJUNOS_ROOT",
+    "Filesystem state": "clean",
+    "Errors behavior": "Continue",
+    "Filesystem OS type": "Linux",
+    "Inode count": "49152",
+    "Block count": "196608",
+    "Reserved block count": "0",
+    "First block": "0",
+    "Block size": "4096",
+    "Fragment size": "4096",
+    "Blocks per group": "32768",
+    "Inodes per group": "8192",
+    "Group descriptor size": "64",
+    "Flex block group size": "16",
+    "Inode size": "256",
+    "Required extra isize": "32",
+    "Desired extra isize": "32",
+    "Default directory hash": "half_md4",
+    "Checksum type": "crc32c",
+}
+
+
+def validate_ext4_header(header, filesystem_uuid, hash_seed):
+    fields = {}
+    for line in header.splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            key = key.strip()
+            if key in fields:
+                fail(f"duplicate ext4 header field: {key}")
+            fields[key] = value.strip()
+    if fields.get("Filesystem UUID") != str(uuid.UUID(filesystem_uuid)):
+        fail("ext4 filesystem UUID is not locked")
+    if fields.get("Directory Hash Seed") != str(uuid.UUID(hash_seed)):
+        fail("ext4 directory hash seed is not locked")
+    for key, wanted in EXT4_EXACT_FIELDS.items():
+        if fields.get(key) != wanted:
+            fail(f"ext4 header mismatch for {key}: {fields.get(key)!r}")
+    features = set(fields.get("Filesystem features", "").split())
+    if features != EXT4_FEATURES:
+        missing = sorted(EXT4_FEATURES - features)
+        unexpected = sorted(features - EXT4_FEATURES)
+        fail(
+            "ext4 feature contract is invalid: "
+            f"missing={missing!r} unexpected={unexpected!r}"
+        )
+    if set(fields.get("Filesystem flags", "").split()) != {"signed_directory_hash"}:
+        fail("ext4 filesystem flag contract is invalid")
+    if set(fields.get("Default mount options", "").split()) != {"acl", "user_xattr"}:
+        fail("ext4 default mount option contract is invalid")
+    return fields
+
+
 def validate_ext4(path, filesystem_uuid, hash_seed):
     path = Path(path)
-    if not path.is_file() or path.is_symlink():
-        fail("ext4 image is not a plain file")
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o644
+        or metadata.st_nlink != 1
+        or metadata.st_size != 768 * 1024 * 1024
+    ):
+        fail("ext4 image topology is invalid")
     environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"}
     header = subprocess.run(
         ["/usr/sbin/dumpe2fs", "-h", path], check=True, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
     ).stdout
-    fields = {}
-    for line in header.splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            fields[key.strip()] = value.strip()
-    if fields.get("Filesystem UUID") != str(uuid.UUID(filesystem_uuid)):
-        fail("ext4 filesystem UUID is not locked")
-    if fields.get("Directory Hash Seed") != str(uuid.UUID(hash_seed)):
-        fail("ext4 directory hash seed is not locked")
-    features = set(fields.get("Filesystem features", "").split())
-    if "has_journal" in features or "extents" not in features:
-        fail("ext4 feature contract is invalid")
+    fields = validate_ext4_header(header, filesystem_uuid, hash_seed)
     for guest_path in ("/etc/inittab", "/bin/busybox", "/boot/grub/grub.cfg"):
         output = subprocess.run(
             ["/usr/sbin/debugfs", "-R", f"stat {guest_path}", path],
@@ -675,7 +729,8 @@ def validate_ext4(path, filesystem_uuid, hash_seed):
         ).stdout
         if not re.search(r"User:\s+0\s+Group:\s+0(?:\s|$)", output):
             fail(f"ext4 payload is not root-owned: {guest_path}")
-    print(json.dumps({"filesystem_uuid": fields["Filesystem UUID"],
+    print(json.dumps({"features": sorted(EXT4_FEATURES),
+                      "filesystem_uuid": fields["Filesystem UUID"],
                       "hash_seed": fields["Directory Hash Seed"]}, sort_keys=True))
 
 
@@ -912,6 +967,14 @@ elif command == "validate-ext4":
     if len(arguments) != 3:
         fail("validate-ext4 requires IMAGE UUID HASH_SEED")
     validate_ext4(*arguments)
+elif command == "validate-ext4-header":
+    if len(arguments) != 3:
+        fail("validate-ext4-header requires HEADER UUID HASH_SEED")
+    fields = validate_ext4_header(
+        Path(arguments[0]).read_text(encoding="utf-8"), arguments[1], arguments[2]
+    )
+    print(json.dumps({"features": sorted(EXT4_FEATURES),
+                      "fields": len(fields)}, sort_keys=True))
 elif command == "validate-serial":
     if len(arguments) not in (4, 5):
         fail("validate-serial requires KIND LOG RELEASE BUILD_ID [NORMALIZED]")
@@ -950,7 +1013,10 @@ for variable in \
   HOSTCFLAGS HOSTCXXFLAGS HOSTLDFLAGS KBUILD_OUTPUT KBUILD_ABS_SRCTREE \
   KBUILD_BUILD_USER KBUILD_BUILD_HOST KBUILD_BUILD_VERSION \
   KBUILD_BUILD_TIMESTAMP KCONFIG_NOTIMESTAMP KCPPFLAGS KCFLAGS KAFLAGS \
-  GNULIB_SRCDIR QEMU_AUDIO_DRV QEMU_PATH QEMU_DATA_DIR; do
+  GNULIB_SRCDIR QEMU_AUDIO_DRV QEMU_PATH QEMU_DATA_DIR \
+  E2FSPROGS_FAKE_TIME E2FSPROGS_UNDO_DIR MKE2FS_CONFIG MKE2FS_SYNC \
+  MKE2FS_FIRST_META_BG MKE2FS_DEVICE_SECTSIZE MKE2FS_DEVICE_PHYS_SECTSIZE \
+  MKE2FS_SKIP_CHECK_MSG; do
   unset "$variable"
 done
 
@@ -971,6 +1037,7 @@ overlay=$project_root/rootfs/base-system
 kernel_kcflags='-Wno-constant-logical-operand'
 disk_bytes=$((1024 * 1024 * 1024))
 rootfs_bytes=$((768 * 1024 * 1024))
+rootfs_features=ext_attr,dir_index,filetype,extent,64bit,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum
 disk_guid=6f53d7c2-4ed5-4e54-9a50-d9430b70f101
 bios_guid=813e4ae2-9e5f-4f2e-a37f-6e3b570ba101
 root_guid=bbf9a847-17bc-4665-8af2-5ed2017ca102
@@ -1618,6 +1685,12 @@ validate_candidate() {
     "$build/busybox-install-b/bin/busybox"
   cmp -- "$build/busybox-a.config" "$build/busybox-b.config"
   cmp -- "$build/root-a.ext4" "$build/root-b.ext4"
+  "$script_path" --internal-python validate-ext4 \
+    "$build/root-a.ext4" "$root_uuid" \
+    4a696d42-6f75-4769-8f73-43616a756e21 >/dev/null
+  "$script_path" --internal-python validate-ext4 \
+    "$build/root-b.ext4" "$root_uuid" \
+    4a696d42-6f75-4769-8f73-43616a756e21 >/dev/null
   cmp -- "$build/disk-a.raw" "$build/disk-b.raw"
   cmp -- "$artifact/boot/bzImage" "$build/bzImage-a"
   cmp -- "$artifact/boot/disk.raw" "$build/disk-a.raw"
@@ -1906,12 +1979,13 @@ make_ext4() {
   truncate -s "$rootfs_bytes" "$image"
   fakeroot -- sh -ceu '
     chown -R 0:0 "$1"
-    E2FSPROGS_FAKE_TIME="$2" /usr/sbin/mke2fs \
-      -q -t ext4 -b 4096 -I 256 -m 0 -L CAJUNOS_ROOT -U "$3" \
-      -E lazy_itable_init=0,root_owner=0:0,hash_seed=4a696d42-6f75-4769-8f73-43616a756e21 \
-      -O "^has_journal,^resize_inode,^orphan_file,^metadata_csum_seed" \
+    MKE2FS_CONFIG=/dev/null E2FSPROGS_FAKE_TIME="$2" /usr/sbin/mke2fs \
+      -q -b 4096 -g 32768 -G 16 -i 16384 -I 256 -m 0 \
+      -o linux -e continue -L CAJUNOS_ROOT -U "$3" \
+      -E lazy_itable_init=0,root_owner=0:0,root_perms=0755,hash_seed=4a696d42-6f75-4769-8f73-43616a756e21,nodiscard \
+      -O "none,$5" \
       -d "$1" "$4"
-  ' sh "$root" "$SOURCE_DATE_EPOCH" "$root_uuid" "$image"
+  ' sh "$root" "$SOURCE_DATE_EPOCH" "$root_uuid" "$image" "$rootfs_features"
   chmod 0644 "$image"
   "$script_path" --internal-python validate-ext4 "$image" "$root_uuid" \
     4a696d42-6f75-4769-8f73-43616a756e21 >/dev/null

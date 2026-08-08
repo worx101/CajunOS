@@ -776,6 +776,114 @@ class BaseSystemImageStageTests(unittest.TestCase):
         (root / "sbin/init").symlink_to("../../outside")
         self.assert_rejects("inventory", root)
 
+    def test_ext4_header_and_creation_contract_are_exact_and_fail_closed(self) -> None:
+        filesystem_uuid = "7a1a6d79-2db5-47b7-87f4-7dbdd9595102"
+        hash_seed = "4a696d42-6f75-4769-8f73-43616a756e21"
+        header = "\n".join(
+            (
+                "Filesystem volume name:   CAJUNOS_ROOT",
+                f"Filesystem UUID:          {filesystem_uuid}",
+                "Filesystem features:      ext_attr dir_index filetype extent "
+                "64bit flex_bg sparse_super large_file huge_file dir_nlink "
+                "extra_isize metadata_csum",
+                "Filesystem flags:         signed_directory_hash",
+                "Default mount options:    user_xattr acl",
+                "Filesystem state:         clean",
+                "Errors behavior:          Continue",
+                "Filesystem OS type:       Linux",
+                "Inode count:              49152",
+                "Block count:              196608",
+                "Reserved block count:     0",
+                "First block:              0",
+                "Block size:               4096",
+                "Fragment size:            4096",
+                "Blocks per group:         32768",
+                "Inodes per group:         8192",
+                "Group descriptor size:    64",
+                "Flex block group size:    16",
+                "Inode size:               256",
+                "Required extra isize:     32",
+                "Desired extra isize:      32",
+                "Default directory hash:   half_md4",
+                f"Directory Hash Seed:      {hash_seed}",
+                "Checksum type:            crc32c",
+            )
+        ) + "\n"
+        header_path = self.temporary_root / "dumpe2fs.header"
+        header_path.write_text(header, encoding="utf-8")
+        result = self.internal(
+            "validate-ext4-header", header_path, filesystem_uuid, hash_seed
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = json.loads(result.stdout)
+
+        mutations = {
+            "plural-extent": header.replace(" filetype extent 64bit ",
+                                             " filetype extents 64bit "),
+            "journal": header.replace(" metadata_csum\n", " metadata_csum has_journal\n"),
+            "missing-checksum": header.replace(" metadata_csum\n", "\n"),
+            "orphan-file": header.replace(" metadata_csum\n", " metadata_csum orphan_file\n"),
+            "block-size": header.replace("Block size:               4096",
+                                         "Block size:               1024"),
+            "descriptor-size": header.replace("Group descriptor size:    64",
+                                              "Group descriptor size:    32"),
+            "flex-size": header.replace("Flex block group size:    16",
+                                        "Flex block group size:    8"),
+            "dirty-state": header.replace("Filesystem state:         clean",
+                                          "Filesystem state:         not clean"),
+            "mount-option": header.replace("user_xattr acl", "user_xattr acl quota"),
+            "filesystem-flag": header.replace(
+                "signed_directory_hash", "signed_directory_hash unsigned_directory_hash"
+            ),
+            "uuid": header.replace(filesystem_uuid, "00000000-0000-0000-0000-000000000000"),
+            "hash-seed": header.replace(hash_seed, "00000000-0000-0000-0000-000000000000"),
+            "duplicate-field": header + "Block size:               4096\n",
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                header_path.write_text(mutated, encoding="utf-8")
+                self.assert_rejects(
+                    "validate-ext4-header", header_path, filesystem_uuid, hash_seed
+                )
+
+        contents = SCRIPT.read_text(encoding="utf-8")
+        features_line = next(
+            line for line in contents.splitlines() if line.startswith("rootfs_features=")
+        )
+        shell_features = set(features_line.split("=", 1)[1].split(","))
+        self.assertEqual(evidence["features"], sorted(shell_features))
+        self.assertIn("extent", shell_features)
+        self.assertNotIn("extents", shell_features)
+
+        make_ext4 = contents.split("make_ext4() {", 1)[1].split("make_disk() {", 1)[0]
+        self.assertIn("MKE2FS_CONFIG=/dev/null", make_ext4)
+        self.assertNotIn("-t ext4", make_ext4)
+        for option in (
+            "-b 4096", "-g 32768", "-G 16", "-i 16384", "-I 256", "-m 0",
+            "-o linux", "-e continue", "root_owner=0:0", "root_perms=0755",
+            f"hash_seed={hash_seed}", "nodiscard", '-O "none,$5"',
+            '"$rootfs_features"',
+        ):
+            self.assertIn(option, make_ext4)
+        self.assertNotIn("^has_journal", make_ext4)
+        for variable in (
+            "E2FSPROGS_FAKE_TIME", "E2FSPROGS_UNDO_DIR", "MKE2FS_CONFIG",
+            "MKE2FS_SYNC", "MKE2FS_FIRST_META_BG", "MKE2FS_DEVICE_SECTSIZE",
+            "MKE2FS_DEVICE_PHYS_SECTSIZE", "MKE2FS_SKIP_CHECK_MSG",
+        ):
+            self.assertIn(variable, contents)
+
+        validate_candidate = contents.split("validate_candidate() {", 1)[1].split(
+            "validate_complete() {", 1
+        )[0]
+        self.assertEqual(validate_candidate.count("validate-ext4 \\\n"), 2)
+        self.assertIn('"$build/root-a.ext4" "$root_uuid"', validate_candidate)
+        self.assertIn('"$build/root-b.ext4" "$root_uuid"', validate_candidate)
+        self.assertLess(
+            validate_candidate.index('cmp -- "$build/root-a.ext4"'),
+            validate_candidate.index('"$build/root-a.ext4" "$root_uuid"'),
+        )
+
     def test_gpt_validator_and_rootless_grub_patcher(self) -> None:
         disk = self.temporary_root / "disk.raw"
         make_gpt(disk)

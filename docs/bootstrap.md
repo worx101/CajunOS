@@ -245,8 +245,10 @@ so the kernel and image cannot drift independently.
 Two independent root trees are normalized to the Linux commit epoch and
 populated into fixed-UUID ext4 images under one fakeroot session that explicitly
 maps every inode to uid/gid 0. The filesystem hash seed and feature set are
-fixed, and the completed images must be byte-identical. A fixed-GUID GPT gives
-GRUB an EF02 BIOS Boot partition and CajunOS its root partition. GRUB is
+fixed, and the completed images must be byte-identical. Filesystem creation
+ignores `/etc/mke2fs.conf`; block, inode, and flex-group geometry plus the exact
+feature set are supplied explicitly and replayed from the superblock. A fixed-GUID
+GPT gives GRUB an EF02 BIOS Boot partition and CajunOS its root partition. GRUB is
 bootstrapped and built from the locked upstream sources; no host
 `grub-install` is used. A small attested installer implements the fixed-layout
 i386-pc subset of upstream `setup.c`, embedding the independently built
