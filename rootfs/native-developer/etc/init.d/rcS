@@ -2,10 +2,25 @@
 set -eu
 
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+build_probe_directory=
 
 fail()
 {
     echo "CAJUNOS_NATIVE_DEVELOPER_FAIL $1"
+    if [ -n "$build_probe_directory" ]; then
+        /bin/rm -f "$build_probe_directory/execute" 2>/dev/null || true
+        /bin/rmdir "$build_probe_directory" 2>/dev/null || true
+        build_probe_directory=
+    fi
+    if [ -r /proc/self/mountinfo ] && /usr/bin/awk '
+        $5 == "/build" { found = 1 }
+        END { exit !found }
+    ' /proc/self/mountinfo 2>/dev/null; then
+        sync
+        /bin/umount /build 2>/dev/null \
+            || /bin/mount -o remount,ro /build 2>/dev/null \
+            || true
+    fi
     sync
     exec /sbin/poweroff -f
 }
@@ -70,28 +85,278 @@ root_partuuid=$(/bin/cat /etc/cajunos-root-partuuid) || fail root-partuuid
 /bin/grep -q "^PARTUUID=$root_partuuid$" "$root_sysfs/uevent" || fail root-partuuid
 echo CAJUNOS_NATIVE_DEVELOPER_ROOT_OK
 
+build_partuuid_file=/etc/cajunos-build-partuuid
+build_fs_uuid_file=/etc/cajunos-build-fs-uuid
+build_sentinel_sha256_file=/etc/cajunos-build-sentinel-sha256
+[ ! -L /etc/fstab ] && [ -f /etc/fstab ] \
+    && [ "$(/bin/stat -c '%u:%g:%a:%h' /etc/fstab)" = 0:0:644:1 ] \
+    || fail build-fstab-type
+build_fstab_count=$(/usr/bin/awk '$2 == "/build" { count++ } END { print count + 0 }' \
+    /etc/fstab) || fail build-fstab-inspect
+build_contract_count=0
+for contract_file in "$build_partuuid_file" "$build_fs_uuid_file" \
+    "$build_sentinel_sha256_file"; do
+    if [ -e "$contract_file" ] || [ -L "$contract_file" ]; then
+        build_contract_count=$((build_contract_count + 1))
+        [ ! -L "$contract_file" ] && [ -f "$contract_file" ] \
+            || fail build-contract-type
+        [ "$(/bin/stat -c '%u:%g:%a:%h' "$contract_file")" = 0:0:644:1 ] \
+            || fail build-contract-mode
+    fi
+done
+case "$build_contract_count" in
+    0)
+        [ "$build_fstab_count" = 0 ] || fail build-fstab-without-contract
+        [ "$(/usr/bin/sha256sum /etc/fstab | /usr/bin/awk '{print $1}')" \
+            = b1aedffa2245aab047929f148ca8d403fc517a915ba4f285cadb61dbe2411486 ] \
+            || fail build-pristine-fstab
+        ;;
+    3)
+        [ "$(/bin/stat -c '%s' "$build_partuuid_file")" = 37 ] \
+            || fail build-partuuid-format
+        [ "$(/bin/stat -c '%s' "$build_fs_uuid_file")" = 37 ] \
+            || fail build-fs-uuid-format
+        [ "$(/bin/stat -c '%s' "$build_sentinel_sha256_file")" = 65 ] \
+            || fail build-sentinel-hash-format
+        build_partuuid=$(/bin/cat "$build_partuuid_file") \
+            || fail build-partuuid-format
+        build_fs_uuid=$(/bin/cat "$build_fs_uuid_file") \
+            || fail build-fs-uuid-format
+        build_sentinel_sha256=$(/bin/cat "$build_sentinel_sha256_file") \
+            || fail build-sentinel-hash-format
+        printf '%s\n' "$build_partuuid" "$build_fs_uuid" | /usr/bin/awk '
+            length($0) != 36 || $0 ~ /[^0-9a-f-]/ { exit 1 }
+            substr($0, 9, 1) != "-" || substr($0, 14, 1) != "-" ||
+            substr($0, 19, 1) != "-" || substr($0, 24, 1) != "-" { exit 1 }
+            { count++ }
+            END { exit !(count == 2) }
+        ' || fail build-uuid-format
+        printf '%s\n' "$build_sentinel_sha256" | /usr/bin/awk '
+            length($0) == 64 && $0 !~ /[^0-9a-f]/ { valid++ }
+            END { exit !(NR == 1 && valid == 1) }
+        ' || fail build-sentinel-hash-format
+        expected_fstab_sha256=$( {
+            printf '%s\n' \
+                'proc /proc proc nosuid,nodev,noexec 0 0' \
+                'sysfs /sys sysfs nosuid,nodev,noexec 0 0' \
+                'devpts /dev/pts devpts nosuid,noexec,gid=5,mode=0620 0 0' \
+                'tmpfs /run tmpfs nosuid,nodev,mode=0755 0 0' \
+                "PARTUUID=$build_partuuid /build ext4 rw,nosuid,nodev 0 2"
+        } | /usr/bin/sha256sum | /usr/bin/awk '{print $1}') \
+            || fail build-fstab-contract
+        [ "$(/usr/bin/sha256sum /etc/fstab | /usr/bin/awk '{print $1}')" \
+            = "$expected_fstab_sha256" ] || fail build-fstab-contract
+        /usr/bin/awk -v source="PARTUUID=$build_partuuid" '
+            $2 == "/build" {
+                count++
+                if (NF == 6 && $1 == source && $3 == "ext4" &&
+                    $4 == "rw,nosuid,nodev" && $5 == 0 && $6 == 2) valid++
+            }
+            END { exit !(count == 1 && valid == 1) }
+        ' /etc/fstab || fail build-fstab-contract
+
+        build_partition_count=0
+        build_device_name=
+        build_sysfs=
+        for candidate in /sys/class/block/*; do
+            [ -f "$candidate/partition" ] || continue
+            /bin/grep -q "^PARTUUID=$build_partuuid$" "$candidate/uevent" \
+                || continue
+            build_partition_count=$((build_partition_count + 1))
+            build_device_name=${candidate##*/}
+            build_sysfs=$candidate
+        done
+        [ "$build_partition_count" = 1 ] || fail build-partuuid-count
+        build_device=/dev/$build_device_name
+        [ -b "$build_device" ] || fail build-device
+        [ "$(/bin/cat "$build_sysfs/partition")" = 1 ] \
+            || fail build-partition-number
+        [ "$(/bin/cat "$build_sysfs/start")" = 4096 ] \
+            || fail build-partition-start
+        [ "$(/bin/cat "$build_sysfs/size")" = 536866783 ] \
+            || fail build-partition-size
+        build_real=$(/bin/readlink -f "$build_sysfs") || fail build-sysfs
+        build_parent_path=${build_real%/*}
+        build_parent=${build_parent_path##*/}
+        [ -n "$build_parent" ] && [ -f "/sys/class/block/$build_parent/size" ] \
+            || fail build-parent
+        [ "$(/bin/cat "/sys/class/block/$build_parent/size")" = 536870912 ] \
+            || fail build-disk-size
+        build_major_minor=$(/bin/cat "$build_sysfs/dev") || fail build-device-id
+        [ "$build_major_minor" != "$root_device" ] || fail build-root-alias
+
+        build_blkid=$(/sbin/blkid "$build_device") || fail build-blkid
+        printf '%s\n' "$build_blkid" | /usr/bin/awk \
+            -v uuid="UUID=\"$build_fs_uuid\"" \
+            -v type='TYPE="ext4"' -v label='LABEL="CAJUNOS_BUILD"' '
+            {
+                lines++
+                for (field = 1; field <= NF; field++) {
+                    if ($field == uuid) uuids++
+                    if ($field == type) types++
+                    if ($field == label) labels++
+                }
+            }
+            END { exit !(lines == 1 && uuids == 1 && types == 1 && labels == 1) }
+        ' || fail build-filesystem-identity
+
+        [ -d /build ] && [ ! -L /build ] \
+            && [ "$(/bin/stat -c '%u:%g:%a' /build)" = 0:0:755 ] \
+            || fail build-mountpoint
+        /usr/bin/awk '$5 == "/build" { count++ } END { exit count != 0 }' \
+            /proc/self/mountinfo || fail build-pre-mounted
+        /bin/mount -t ext4 -o rw,nosuid,nodev,errors=remount-ro \
+            "$build_device" /build || fail build-mount
+        /usr/bin/awk -v device="$build_major_minor" '
+            $5 == "/build" {
+                count++
+                if ($3 == device) major_minor++
+                split($6, option, ",")
+                for (index in option) {
+                    if (option[index] == "rw") rw++
+                    if (option[index] == "nosuid") nosuid++
+                    if (option[index] == "nodev") nodev++
+                }
+                for (field = 7; field <= NF; field++) {
+                    if ($field == "-") {
+                        if ($(field + 1) == "ext4") ext4++
+                        for (superfield = field + 3; superfield <= NF; superfield++) {
+                            split($superfield, superoption, ",")
+                            for (superindex in superoption)
+                                if (superoption[superindex] == "errors=remount-ro") errors++
+                        }
+                        break
+                    }
+                }
+            }
+            END {
+                exit !(count == 1 && major_minor == 1 && rw == 1 &&
+                    nosuid == 1 && nodev == 1 && ext4 == 1 && errors == 1)
+            }
+        ' /proc/self/mountinfo || fail build-mount-contract
+        [ "$(/bin/stat -f -c '%S:%b:%c' /build)" = 4096:66776076:1048576 ] \
+            || fail build-filesystem-capacity
+        [ "$(/bin/stat -c '%u:%g:%a' /build)" = 0:0:755 ] \
+            || fail build-root-mode
+        build_sentinel=/build/.cajunos-build-volume
+        [ ! -L "$build_sentinel" ] && [ -f "$build_sentinel" ] \
+            && [ "$(/bin/stat -c '%u:%g:%a:%h' "$build_sentinel")" = 0:0:644:1 ] \
+            || fail build-sentinel-type
+        [ "$(/usr/bin/sha256sum "$build_sentinel" | /usr/bin/awk '{print $1}')" \
+            = "$build_sentinel_sha256" ] || fail build-sentinel-hash
+        build_probe_candidate=/build/.cajunos-runtime-probe
+        [ ! -e "$build_probe_candidate" ] && [ ! -L "$build_probe_candidate" ] \
+            || fail build-probe-path
+        /bin/mkdir -m 0700 "$build_probe_candidate" || fail build-probe-directory
+        [ ! -L "$build_probe_candidate" ] && [ -d "$build_probe_candidate" ] \
+            && [ "$(/bin/stat -c '%u:%g:%a' "$build_probe_candidate")" = 0:0:700 ] \
+            || fail build-probe-directory
+        build_probe_directory=$build_probe_candidate
+        build_probe=$build_probe_directory/execute
+        ( umask 077
+          printf '#!/bin/sh\nprintf "CAJUNOS_BUILD_EXEC_OK\\n"\n' >"$build_probe"
+        ) || fail build-write
+        /bin/chmod 0700 "$build_probe" || fail build-write
+        [ "$("$build_probe")" = CAJUNOS_BUILD_EXEC_OK ] || fail build-exec
+        /bin/rm -f "$build_probe" || fail build-cleanup
+        /bin/rmdir "$build_probe_directory" || fail build-cleanup
+        build_probe_directory=
+        echo CAJUNOS_NATIVE_DEVELOPER_BUILD_VOLUME_OK
+        ;;
+    *)
+        fail build-contract-count
+        ;;
+esac
+
 [ -e /sys/class/net/eth0 ] || fail net-device
 /sbin/ip link set eth0 up || fail net-link
-/sbin/udhcpc -f -n -p /run/udhcpc.eth0.pid -t 10 -T 1 \
-    -i eth0 -s /etc/udhcpc/default.script &
-udhcpc_pid=$!
-dhcp_wait=0
-while ! /sbin/ip -4 addr show dev eth0 | /bin/grep -q 'inet '; do
-    if ! /bin/kill -0 "$udhcpc_pid" 2>/dev/null; then
-        wait "$udhcpc_pid" 2>/dev/null || true
-        fail dhcp
+static_network_file=/etc/cajunos-static-network
+if [ -e "$static_network_file" ] || [ -L "$static_network_file" ]; then
+    [ ! -L "$static_network_file" ] && [ -f "$static_network_file" ] \
+        && [ "$(/bin/stat -c '%u:%g:%a:%h' "$static_network_file")" = 0:0:644:1 ] \
+        || fail static-network-type
+    [ "$(/bin/stat -c '%s' "$static_network_file")" -le 160 ] \
+        || fail static-network-size
+    [ "$(/usr/bin/wc -l <"$static_network_file" | /usr/bin/awk '{print $1}')" = 3 ] \
+        || fail static-network-lines
+    /usr/bin/awk '
+        function decimal(value, maximum) {
+            return value ~ /^[0-9]+$/ &&
+                !(length(value) > 1 && substr(value, 1, 1) == "0") &&
+                value + 0 <= maximum && sprintf("%d", value + 0) == value
+        }
+        function ipv4(value, octet, count, position) {
+            count = split(value, octet, ".")
+            if (count != 4) return 0
+            for (position = 1; position <= 4; position++)
+                if (!decimal(octet[position], 255)) return 0
+            return 1
+        }
+        NR == 1 {
+            if (substr($0, 1, 8) != "address=") exit 1
+            value = substr($0, 9)
+            if (split(value, address, "/") != 2 || !ipv4(address[1]) ||
+                !decimal(address[2], 32)) exit 1
+            valid++
+        }
+        NR == 2 {
+            if (substr($0, 1, 8) != "gateway=" || !ipv4(substr($0, 9))) exit 1
+            valid++
+        }
+        NR == 3 {
+            if (substr($0, 1, 4) != "dns=" || !ipv4(substr($0, 5))) exit 1
+            valid++
+        }
+        END { exit !(NR == 3 && valid == 3) }
+    ' "$static_network_file" || fail static-network-format
+    static_address=$(/usr/bin/awk 'NR == 1 { print substr($0, 9) }' \
+        "$static_network_file") || fail static-network-address
+    static_gateway=$(/usr/bin/awk 'NR == 2 { print substr($0, 9) }' \
+        "$static_network_file") || fail static-network-gateway
+    static_dns=$(/usr/bin/awk 'NR == 3 { print substr($0, 5) }' \
+        "$static_network_file") || fail static-network-dns
+    /sbin/ip -4 addr flush dev eth0 || fail static-network-address-flush
+    /sbin/ip -4 route flush dev eth0 || fail static-network-route-flush
+    /sbin/ip -4 addr add "$static_address" dev eth0 \
+        || fail static-network-address-add
+    /sbin/ip -4 route add default via "$static_gateway" dev eth0 \
+        || fail static-network-route-add
+    static_resolver=/run/cajunos-static-resolv.conf
+    ( umask 022
+      /bin/printf 'nameserver %s\n' "$static_dns" >"$static_resolver"
+    ) || fail static-network-resolver
+    /bin/chmod 0644 "$static_resolver" || fail static-network-resolver
+    if [ -e /etc/resolv.conf ] || [ -L /etc/resolv.conf ]; then
+        [ ! -L /etc/resolv.conf ] && [ -f /etc/resolv.conf ] \
+            && [ "$(/bin/stat -c '%u:%g:%a:%h' /etc/resolv.conf)" = 0:0:644:1 ] \
+            || fail static-network-resolver-type
     fi
-    dhcp_wait=$((dhcp_wait + 1))
-    if [ "$dhcp_wait" -ge 15 ]; then
-        /bin/kill "$udhcpc_pid" 2>/dev/null || true
-        wait "$udhcpc_pid" 2>/dev/null || true
-        fail dhcp-timeout
-    fi
-    /bin/sleep 1
-done
-pidfile_pid=$(/bin/cat /run/udhcpc.eth0.pid) || fail dhcp-pidfile
-[ "$pidfile_pid" = "$udhcpc_pid" ] || fail dhcp-pidfile
-/bin/kill -0 "$udhcpc_pid" 2>/dev/null || fail dhcp-renewal
+    /bin/mv -f "$static_resolver" /etc/resolv.conf \
+        || fail static-network-resolver
+    [ "$(/bin/stat -c '%u:%g:%a:%h' /etc/resolv.conf)" = 0:0:644:1 ] \
+        || fail static-network-resolver
+else
+    /sbin/udhcpc -f -n -p /run/udhcpc.eth0.pid -t 10 -T 1 \
+        -i eth0 -s /etc/udhcpc/default.script &
+    udhcpc_pid=$!
+    dhcp_wait=0
+    while ! /sbin/ip -4 addr show dev eth0 | /bin/grep -q 'inet '; do
+        if ! /bin/kill -0 "$udhcpc_pid" 2>/dev/null; then
+            wait "$udhcpc_pid" 2>/dev/null || true
+            fail dhcp
+        fi
+        dhcp_wait=$((dhcp_wait + 1))
+        if [ "$dhcp_wait" -ge 15 ]; then
+            /bin/kill "$udhcpc_pid" 2>/dev/null || true
+            wait "$udhcpc_pid" 2>/dev/null || true
+            fail dhcp-timeout
+        fi
+        /bin/sleep 1
+    done
+    pidfile_pid=$(/bin/cat /run/udhcpc.eth0.pid) || fail dhcp-pidfile
+    [ "$pidfile_pid" = "$udhcpc_pid" ] || fail dhcp-pidfile
+    /bin/kill -0 "$udhcpc_pid" 2>/dev/null || fail dhcp-renewal
+fi
 echo CAJUNOS_NATIVE_DEVELOPER_NETWORK_OK
 ipv4=$(/sbin/ip -4 addr show dev eth0 | /usr/bin/awk '
     $1 == "inet" {

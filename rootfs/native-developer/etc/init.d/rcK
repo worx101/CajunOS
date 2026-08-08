@@ -25,6 +25,13 @@ stop_pidfile()
 stop_pidfile /run/dropbear.pid
 stop_pidfile /run/udhcpc.eth0.pid
 /bin/sync
+if /usr/bin/awk '$5 == "/build" { found = 1 } END { exit !found }' \
+    /proc/self/mountinfo 2>/dev/null; then
+    /bin/umount /build 2>/dev/null \
+        || /bin/mount -o remount,ro /build 2>/dev/null \
+        || true
+    /bin/sync
+fi
 # BusyBox umount -a reads /proc/mounts when mtab support is disabled, so /proc
 # must remain mounted until this remount/unmount pass has completed.
 /bin/umount -a -r 2>/dev/null || true

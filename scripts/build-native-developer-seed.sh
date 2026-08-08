@@ -362,6 +362,7 @@ def canonicalize_root(root):
         "etc/shadow": (stat.S_ISREG, 0o600),
         "root": (stat.S_ISDIR, 0o700),
         "root/.ssh": (stat.S_ISDIR, 0o700),
+        "build": (stat.S_ISDIR, 0o755),
         "etc/dropbear": (stat.S_ISDIR, 0o700),
         "lost+found": (stat.S_ISDIR, 0o700),
         "tmp": (stat.S_ISDIR, 0o1777),
@@ -382,6 +383,20 @@ def canonicalize_root(root):
     ]
     if host_keys:
         fail("sealed root contains a Dropbear server host key")
+    deployment_contract_paths = {
+        "etc/cajunos-build-partuuid",
+        "etc/cajunos-build-fs-uuid",
+        "etc/cajunos-build-sentinel-sha256",
+    }
+    if any(relative in deployment_contract_paths for _path, _metadata, relative in records):
+        fail("pristine root contains a deployment-specific build-volume contract")
+    if any(
+        relative == "etc/cajunos-static-network"
+        for _path, _metadata, relative in records
+    ):
+        fail("pristine root contains a deployment-specific static network contract")
+    if any(relative.startswith("build/") for _path, _metadata, relative in records):
+        fail("pristine build mountpoint is not empty")
     result = inventory(root)
     result["hardlinks_broken"] = broken_hardlinks
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -411,13 +426,30 @@ def validate_busybox_config(path):
         "CONFIG_BZIP2", "CONFIG_BUNZIP2", "CONFIG_PATCH", "CONFIG_DIFF",
         "CONFIG_CMP", "CONFIG_FLOCK", "CONFIG_NPROC", "CONFIG_TIMEOUT",
         "CONFIG_SHA512SUM", "CONFIG_CKSUM", "CONFIG_FEATURE_SH_STANDALONE",
+        "CONFIG_BLKID", "CONFIG_FEATURE_BLKID_TYPE",
+        "CONFIG_FEATURE_VOLUMEID_EXT", "CONFIG_FEATURE_STAT_FILESYSTEM",
         "CONFIG_FEATURE_STAT_FORMAT", "CONFIG_POWEROFF", "CONFIG_REBOOT",
+        "CONFIG_WC", "CONFIG_MV", "CONFIG_IP", "CONFIG_FEATURE_IP_ADDRESS",
+        "CONFIG_FEATURE_IP_LINK", "CONFIG_FEATURE_IP_ROUTE",
         "CONFIG_TEST1",
         "CONFIG_FEATURE_SH_MATH",
     }
     required_n = {
         "CONFIG_AR", "CONFIG_FEATURE_AR_CREATE", "CONFIG_FEATURE_PREFER_APPLETS",
         "CONFIG_TC", "CONFIG_UDHCPC6", "CONFIG_FEATURE_SUID",
+        "CONFIG_FEATURE_VOLUMEID_BCACHE", "CONFIG_FEATURE_VOLUMEID_BTRFS",
+        "CONFIG_FEATURE_VOLUMEID_CRAMFS", "CONFIG_FEATURE_VOLUMEID_EROFS",
+        "CONFIG_FEATURE_VOLUMEID_EXFAT", "CONFIG_FEATURE_VOLUMEID_F2FS",
+        "CONFIG_FEATURE_VOLUMEID_FAT", "CONFIG_FEATURE_VOLUMEID_HFS",
+        "CONFIG_FEATURE_VOLUMEID_ISO9660", "CONFIG_FEATURE_VOLUMEID_JFS",
+        "CONFIG_FEATURE_VOLUMEID_LFS", "CONFIG_FEATURE_VOLUMEID_LINUXRAID",
+        "CONFIG_FEATURE_VOLUMEID_LINUXSWAP", "CONFIG_FEATURE_VOLUMEID_LUKS",
+        "CONFIG_FEATURE_VOLUMEID_MINIX", "CONFIG_FEATURE_VOLUMEID_NILFS",
+        "CONFIG_FEATURE_VOLUMEID_NTFS", "CONFIG_FEATURE_VOLUMEID_OCFS2",
+        "CONFIG_FEATURE_VOLUMEID_REISERFS", "CONFIG_FEATURE_VOLUMEID_ROMFS",
+        "CONFIG_FEATURE_VOLUMEID_SQUASHFS", "CONFIG_FEATURE_VOLUMEID_SYSV",
+        "CONFIG_FEATURE_VOLUMEID_UBIFS", "CONFIG_FEATURE_VOLUMEID_UDF",
+        "CONFIG_FEATURE_VOLUMEID_XFS",
     }
     for key in sorted(required_y):
         if values.get(key) != "y":
@@ -1255,7 +1287,10 @@ def validate_receipt_topology(receipt):
         "source_sets.base_system": {"digest", "authentication"},
         "source_sets.native_git": {"digest", "authentication"},
         "source_sets.native_archives": {"digest", "authentication"},
-        "orchestration": {"commit", "tree", "recipe_sha256", "overlay_digest"},
+        "orchestration": {
+            "commit", "tree", "recipe_sha256", "overlay_digest",
+            "deployment_helper_sha256",
+        },
         "dependencies": {"sealed_cross_gcc", "sealed_glibc"},
         "dependencies.sealed_cross_gcc": {"build_id", "prefix"},
         "dependencies.sealed_glibc": {"build_id", "snapshot"},
@@ -1404,6 +1439,19 @@ def validate_receipt(receipt_path, artifact_path, build_id, pairs):
         fail("native-developer artifact root is not a real directory")
     receipt = load_json(receipt_path)
     validate_receipt_topology(receipt)
+    retained_helper = artifact / "configuration/deployment-preparation.sh"
+    try:
+        helper_metadata = retained_helper.lstat()
+    except OSError:
+        fail("retained deployment helper is absent")
+    if (
+        not stat.S_ISREG(helper_metadata.st_mode)
+        or helper_metadata.st_nlink != 1
+        or stat.S_IMODE(helper_metadata.st_mode) != 0o644
+        or sha256(retained_helper)
+        != receipt.get("orchestration", {}).get("deployment_helper_sha256")
+    ):
+        fail("retained deployment helper differs from its receipt hash")
     expected = dict(zip(pairs[::2], pairs[1::2], strict=True))
     if len(expected) != len(pairs) // 2:
         fail("validate-receipt contains duplicate expected keys")
@@ -1808,6 +1856,7 @@ native_lock=$project_root/locks/native-developer-seed.lock.json
 archive_manifest=$project_root/manifests/native-developer-archives.json
 archive_lock=$project_root/locks/native-developer-archives.lock.json
 archive_verifier=$project_root/scripts/fetch-native-developer-archives.py
+deployment_helper=$project_root/scripts/prepare-native-developer-deployment.sh
 base_helper=$project_root/scripts/build-base-system-image.sh
 gcc_helper=$project_root/scripts/build-gcc-complete.sh
 glibc_helper=$project_root/scripts/build-glibc-complete.sh
@@ -1866,7 +1915,7 @@ done
 for frozen in \
   "$bootstrap_manifest" "$bootstrap_lock" "$system_manifest" "$system_lock" \
   "$native_manifest" "$native_lock" "$archive_manifest" "$archive_lock" \
-  "$archive_verifier" "$base_helper" "$gcc_helper" "$glibc_helper" \
+  "$archive_verifier" "$deployment_helper" "$base_helper" "$gcc_helper" "$glibc_helper" \
   "$base_busybox_fragment" "$native_busybox_fragment" "$dropbear_options" "$overlay"; do
   [[ -e $frozen && ! -L $frozen ]] || {
     echo "Missing or symlinked frozen native-developer input: $frozen" >&2
@@ -2260,6 +2309,7 @@ if json.load(sys.stdin) != receipt.get("installed_entries"):
 }
 
 recipe_sha256=$(sha256sum "$script_path" | awk '{print $1}')
+deployment_helper_sha256=$(sha256sum "$deployment_helper" | awk '{print $1}')
 base_helper_sha256=$(sha256sum "$base_helper" | awk '{print $1}')
 gcc_helper_sha256=$(sha256sum "$gcc_helper" | awk '{print $1}')
 glibc_helper_sha256=$(sha256sum "$glibc_helper" | awk '{print $1}')
@@ -2308,6 +2358,7 @@ build_id=$("$script_path" --internal-python build-id "$base_build_id" \
   native_digest "$native_digest" archive_digest "$archive_digest" \
   orchestration_commit "$orchestration_commit" orchestration_tree "$orchestration_tree" \
   recipe_sha256 "$recipe_sha256" base_helper_sha256 "$base_helper_sha256" \
+  deployment_helper_sha256 "$deployment_helper_sha256" \
   gcc_helper_sha256 "$gcc_helper_sha256" glibc_helper_sha256 "$glibc_helper_sha256" \
   base_busybox_fragment_sha256 "$base_busybox_fragment_sha256" \
   native_busybox_fragment_sha256 "$native_busybox_fragment_sha256" \
@@ -2404,6 +2455,7 @@ validate_inputs() {
      && $(git -C "$project_root" rev-parse HEAD) == "$orchestration_commit" \
      && $(git -C "$project_root" rev-parse 'HEAD^{tree}') == "$orchestration_tree" \
      && $(sha256sum "$script_path" | awk '{print $1}') == "$recipe_sha256" \
+     && $(sha256sum "$deployment_helper" | awk '{print $1}') == "$deployment_helper_sha256" \
      && $(sha256sum "$base_helper" | awk '{print $1}') == "$base_helper_sha256" \
      && $(sha256sum "$gcc_helper" | awk '{print $1}') == "$gcc_helper_sha256" \
      && $(sha256sum "$glibc_helper" | awk '{print $1}') == "$glibc_helper_sha256" \
@@ -2542,6 +2594,7 @@ validate_stage9b_receipt_contract() {
     orchestration.tree "$orchestration_tree" \
     orchestration.recipe_sha256 "$recipe_sha256" \
     orchestration.overlay_digest "$overlay_digest" \
+    orchestration.deployment_helper_sha256 "$deployment_helper_sha256" \
     dependencies.sealed_cross_gcc.build_id "$tools_build_id" \
     dependencies.sealed_cross_gcc.prefix "$tools_prefix" \
     dependencies.sealed_glibc.build_id "$glibc_build_id" \
@@ -2581,7 +2634,7 @@ validate_stage9b_receipt_contract() {
     security_contract.authentication_logging foreground-stderr-to-serial-console \
     security_contract.qemu_network usernet-restrict-on-loopback-hostfwd-no-egress \
     network.driver virtio-net network.interface eth0 \
-    network.configuration udhcpc-dhcpv4 \
+    network.configuration dhcpv4-default-static-file-optional \
     network.serial_discovery CAJUNOS_NATIVE_DEVELOPER_IPV4-canonical-ipv4 \
     network.resolver_probe loopback-udp-dns-getaddrinfo-no-egress \
     native_toolchain.build "$build_triplet" native_toolchain.host "$target" \
@@ -2770,6 +2823,8 @@ validate_existing_result() {
     "$temporary_root/base-root.json" || return 1
   cmp -- "$artifact/configuration/base-root-foundation.json" \
     "$temporary_root/base-root-foundation.json" || return 1
+  cmp -- "$artifact/configuration/deployment-preparation.sh" \
+    "$deployment_helper" || return 1
   validate_stage9b_receipt_contract "$receipt" "$artifact" || return 1
   "$base_helper" --internal-python validate-gpt \
     "$disk" "$disk_guid" "$bios_guid" "$root_guid" "$root_first_sector" \
@@ -3821,7 +3876,8 @@ build_payload() {
   cp -a -- "$base_root/." "$root/"
   cp -a -- "$stage/." "$root/"
   cp -a -- "$overlay/." "$root/"
-  install -d -m 0755 "$root/usr/src/cajunos" "$root/usr/share/licenses/cajunos"
+  install -d -m 0755 "$root/build" "$root/usr/src/cajunos" \
+    "$root/usr/share/licenses/cajunos"
   for component in linux glibc binutils gcc busybox dropbear make gmp mpfr mpc; do
     cp -a -- "$source/$component" "$root/usr/src/cajunos/$component"
   done
@@ -4053,6 +4109,8 @@ install -m 0644 \
   "$artifact_temporary/configuration/omitted-private-test-fixtures.json"
 install -m 0644 "$base_busybox_fragment" "$native_busybox_fragment" \
   "$dropbear_options" "$artifact_temporary/configuration/"
+install -m 0644 "$deployment_helper" \
+  "$artifact_temporary/configuration/deployment-preparation.sh"
 install -m 0644 "$key_temporary" \
   "$artifact_temporary/configuration/owner-authorized-key.pub"
 python3 - "$artifact_temporary/configuration/build-contract.json" \
@@ -4109,6 +4167,7 @@ export CAJUNOS_NATIVE_RECEIPT_EPOCH=$SOURCE_DATE_EPOCH
 export CAJUNOS_NATIVE_RECEIPT_ORCHESTRATION_COMMIT=$orchestration_commit
 export CAJUNOS_NATIVE_RECEIPT_ORCHESTRATION_TREE=$orchestration_tree
 export CAJUNOS_NATIVE_RECEIPT_RECIPE_SHA256=$recipe_sha256
+export CAJUNOS_NATIVE_RECEIPT_DEPLOYMENT_HELPER_SHA256=$deployment_helper_sha256
 export CAJUNOS_NATIVE_RECEIPT_OVERLAY_DIGEST=$overlay_digest
 export CAJUNOS_NATIVE_RECEIPT_HOST_CONTRACT=$host_contract_sha256
 export CAJUNOS_NATIVE_RECEIPT_DISK_SHA256=$sealed_disk_sha256
@@ -4201,6 +4260,7 @@ receipt = {
         "tree": e["CAJUNOS_NATIVE_RECEIPT_ORCHESTRATION_TREE"],
         "recipe_sha256": e["CAJUNOS_NATIVE_RECEIPT_RECIPE_SHA256"],
         "overlay_digest": e["CAJUNOS_NATIVE_RECEIPT_OVERLAY_DIGEST"],
+        "deployment_helper_sha256": e["CAJUNOS_NATIVE_RECEIPT_DEPLOYMENT_HELPER_SHA256"],
     },
     "dependencies": {
         "sealed_cross_gcc": {"build_id": e["CAJUNOS_NATIVE_RECEIPT_TOOLS_ID"], "prefix": e["CAJUNOS_NATIVE_RECEIPT_TOOLS_PREFIX"]},
@@ -4232,7 +4292,7 @@ receipt = {
     },
     "network": {
         "driver": "virtio-net", "interface": "eth0",
-        "configuration": "udhcpc-dhcpv4",
+        "configuration": "dhcpv4-default-static-file-optional",
         "serial_discovery": "CAJUNOS_NATIVE_DEVELOPER_IPV4-canonical-ipv4",
         "resolver_probe": "loopback-udp-dns-getaddrinfo-no-egress",
     },
@@ -4335,6 +4395,7 @@ validate_candidate() {
   cmp -- "$artifact/boot/disk.raw" "$build/disk-a.raw"
   cmp -- "$artifact/boot/bzImage" "$base_artifact/boot/bzImage"
   cmp -- "$artifact/boot/busybox.config" "$build/evidence-a/busybox.config"
+  cmp -- "$artifact/configuration/deployment-preparation.sh" "$deployment_helper"
   validate_stage9b_receipt_contract "$artifact/receipt.json" "$artifact"
   "$base_helper" --internal-python validate-gpt \
     "$artifact/boot/disk.raw" "$disk_guid" "$bios_guid" \

@@ -361,3 +361,135 @@ Stage 9B does not deploy a VM on tower1, create a Proxmox template, prove the
 VirtIO-SCSI production controller path, or establish final VM sizing. Those are
 the following deployment milestone, which must start from the pristine artifact
 and retain its own boot, direct-SSH, storage-growth, and template evidence.
+
+### Native developer deployment derivative
+
+`scripts/prepare-native-developer-deployment.sh` is the fail-closed offline
+storage boundary for that following milestone. It requires root only for
+temporary loop mappings; it never mounts either filesystem and the guest is
+never booted. The helper validates the complete pristine 16 GiB disk against
+its Stage 9B receipt, requires that receipt to bind the exact helper hash, then
+produces new files while leaving both inputs read-only and unchanged.
+
+The OS derivative is exactly 64 GiB. Its disk GUID, GRUB MBR bytes, BIOS Boot
+partition, BIOS PARTUUID, root PARTUUID, root filesystem UUID, feature masks,
+and directory hash seed are preserved. Only GPT partition 2 and its clean ext4
+filesystem grow to the new boundary. The separate build disk is exactly
+256 GiB with one GPT partition starting at sector 4096, 1,048,576 inodes, a
+locked directory hash seed, an internal journal, and label `CAJUNOS_BUILD`.
+Its ext4 superblock has exactly 67,108,347 blocks and 1,048,576 inodes; the
+mounted filesystem must report the locked statfs tuple
+`4096:66776076:1048576` (fundamental block size, total data blocks, total
+inodes). The helper rejects nil UUIDs, duplicate deployment UUIDs, and any
+deployment UUID that collides with the pristine disk GUID, either pristine
+PARTUUID, or the pristine root filesystem UUID.
+
+The Stage 9B receipt hash is an external trust anchor. Record it when Stage 9B
+is sealed and provide that recorded value; never calculate it from the receipt
+being validated. The receipt in turn binds the deployment helper hash, and the
+Stage 9B validator proves that hash against the retained
+`configuration/deployment-preparation.sh` copy.
+
+All three output paths must be canonical absolute paths below existing real
+directories. Every directory from `/` through each output parent must be owned
+by root and have no group or other write bits. The helper creates a private
+mode-0700 staging directory inside each protected parent, publishes with an
+atomic no-replace hard link, and deletes every published output if a later gate
+fails. This protects root-created files from output-parent rename, unlink, and
+replacement races. Inputs remain immutable by contract and are hash-checked
+before and after preparation.
+
+Generate three deployment-specific canonical lowercase UUIDs and run the
+target as root while the future VM is stopped:
+
+```sh
+export CAJUNOS_STAGE9B_RECEIPT=/path/to/stage9b/receipt.json
+export CAJUNOS_STAGE9B_RECEIPT_SHA256=<independently-recorded-64-hex-digest>
+export CAJUNOS_STAGE9B_DISK=/path/to/stage9b/boot/disk.raw
+export CAJUNOS_DEPLOYMENT_OS_DISK=/path/to/cajunos-os-64g.raw
+export CAJUNOS_DEPLOYMENT_BUILD_DISK=/path/to/cajunos-build-256g.raw
+export CAJUNOS_DEPLOYMENT_EVIDENCE=/path/to/cajunos-deployment.json
+export CAJUNOS_BUILD_DISK_GUID=$(uuidgen | tr A-F a-f)
+export CAJUNOS_BUILD_PARTUUID=$(uuidgen | tr A-F a-f)
+export CAJUNOS_BUILD_FS_UUID=$(uuidgen | tr A-F a-f)
+sudo --preserve-env=CAJUNOS_STAGE9B_RECEIPT,CAJUNOS_STAGE9B_RECEIPT_SHA256,CAJUNOS_STAGE9B_DISK,CAJUNOS_DEPLOYMENT_OS_DISK,CAJUNOS_DEPLOYMENT_BUILD_DISK,CAJUNOS_DEPLOYMENT_EVIDENCE,CAJUNOS_BUILD_DISK_GUID,CAJUNOS_BUILD_PARTUUID,CAJUNOS_BUILD_FS_UUID \
+  make prepare-native-developer-deployment
+```
+
+The helper injects three root-owned mode-0644 identity files under `/etc`, an
+exact persistent fstab entry of
+`PARTUUID=<locked> /build ext4 rw,nosuid,nodev 0 2`, and the matching
+root-owned `/.cajunos-build-volume` sentinel in the build filesystem. Any
+partial identity contract, missing or duplicate PARTUUID, wrong disk or
+partition size, wrong filesystem UUID/type/label, wrong sentinel, unsafe mount
+options, or non-executable workspace fails before networking and Dropbear.
+The shutdown path synchronizes and unmounts `/build` before the general root
+unmount pass.
+
+Publication uses no-replace links and publishes the evidence JSON last. An OS
+or build output without its matching evidence is incomplete crash residue and
+must not be imported. The evidence binds the source receipt and disk hashes,
+the deployment helper hash, all identities and geometry, both output hashes,
+and the exact sentinel. Before evidence publication, the already published disk
+files receive a full forced read-only fsck, their injected files and sentinel
+are reread, and their complete hashes are checked again. The same replay is
+available later with `make validate-native-developer-deployment`.
+Both filesystems also receive explicit never-mounted/last-write/last-check
+superblock time normalization to the sealed source epoch after the final
+mutating fsck. Raw fields are checked, then a forced `E2FSCK_TIME` read-only
+fsck must preserve a before/after filesystem hash before any content claim is
+accepted; inherited e2fsprogs, e2fsck, mke2fs, and source-date overrides are
+discarded.
+
+Authoritative acceptance requires two independent preparations A and B from
+the same pristine input and the same three deployment UUIDs, using six distinct
+disk/evidence output paths. Validate both, then set
+`CAJUNOS_DEPLOYMENT_EVIDENCE_A`, `CAJUNOS_DEPLOYMENT_EVIDENCE_B`, and a new
+root-protected `CAJUNOS_DEPLOYMENT_COMPARISON` path and run:
+
+```sh
+sudo --preserve-env=CAJUNOS_STAGE9B_RECEIPT_SHA256,CAJUNOS_DEPLOYMENT_EVIDENCE_A,CAJUNOS_DEPLOYMENT_EVIDENCE_B,CAJUNOS_DEPLOYMENT_COMPARISON \
+  make validate-native-developer-deployment-reproducibility
+```
+
+That gate fully replays both pairs, requires byte-identical 64 GiB OS disks and
+256 GiB build disks, and publishes a no-replace comparison receipt. Import only
+one accepted pair. Reusing an identity tuple is deliberate A/B replay;
+separate guests intended to coexist must receive distinct deployment UUIDs.
+
+The runtime contract deliberately does not claim to read the build disk's GPT
+disk GUID: that GUID is checked offline against the evidence. At boot, CajunOS
+checks the build partition PARTUUID, exact parent/partition sector counts,
+ext4 UUID/type/label, exact mounted capacity, mount options, sentinel hash, and
+executable workspace behavior. A missing deployment contract is accepted only
+with the exact pristine fstab and no `/build` entry; any partial contract or
+zero-contract downgrade fails closed.
+
+For templating, import an accepted derivative as a stopped source and never
+boot that source VM. Create a disposable full clone, prove boot, direct SSH,
+storage persistence, and native package rebuild there, then stop and destroy
+the clone. Only after that acceptance may the untouched, never-booted source be
+converted into a template. Validate future instances as full clones with new,
+pairwise-distinct deployment identities; a booted validation VM is never the
+template source.
+
+The pristine artifact and template must not contain
+`/etc/cajunos-static-network`; DHCP is the generic default. After a disposable
+VM has completed its first DHCP boot and direct-SSH proof, that VM alone may
+receive a root-owned, mode-0644, link-count-one file with exactly three ordered,
+newline-terminated lines:
+
+```text
+address=10.10.10.18/24
+gateway=10.10.10.1
+dns=10.10.10.10
+```
+
+Those values are the VM105 instance contract, not hard-coded runtime defaults.
+The parser accepts canonical IPv4 octets and a canonical prefix from 0 through
+32 but rejects reordered/extra keys, leading-zero octets, duplicate lines,
+missing final newline, symlinks, and wrong ownership/mode/link count. When the
+file is present, boot flushes prior IPv4 addresses and routes, installs the
+address/default route/resolver, and never starts `udhcpc`; when absent, the
+existing DHCP path is unchanged. Both paths retain the same serial network and
+canonical IPv4 markers. The template source remains generic and unconfigured.

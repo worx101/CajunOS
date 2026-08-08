@@ -19,6 +19,7 @@ SCRIPT = PROJECT / "scripts/build-native-developer-seed.sh"
 BUSYBOX = PROJECT / "configs/busybox-native-developer.fragment"
 DROPBEAR = PROJECT / "configs/dropbear-native-developer.h"
 OVERLAY = PROJECT / "rootfs/native-developer"
+DEPLOYMENT_HELPER = PROJECT / "scripts/prepare-native-developer-deployment.sh"
 
 
 class NativeDeveloperSeedTests(unittest.TestCase):
@@ -159,7 +160,11 @@ class NativeDeveloperSeedTests(unittest.TestCase):
             "CONFIG_GUNZIP", "CONFIG_BZIP2", "CONFIG_BUNZIP2", "CONFIG_PATCH",
             "CONFIG_DIFF", "CONFIG_CMP", "CONFIG_FLOCK", "CONFIG_NPROC",
             "CONFIG_TIMEOUT", "CONFIG_SHA512SUM", "CONFIG_CKSUM",
+            "CONFIG_BLKID", "CONFIG_FEATURE_BLKID_TYPE",
+            "CONFIG_FEATURE_VOLUMEID_EXT", "CONFIG_FEATURE_STAT_FILESYSTEM",
             "CONFIG_FEATURE_SH_STANDALONE", "CONFIG_FEATURE_STAT_FORMAT",
+            "CONFIG_WC", "CONFIG_MV", "CONFIG_IP", "CONFIG_FEATURE_IP_ADDRESS",
+            "CONFIG_FEATURE_IP_LINK", "CONFIG_FEATURE_IP_ROUTE",
             "CONFIG_POWEROFF", "CONFIG_REBOOT",
             "CONFIG_TEST1",
             "CONFIG_FEATURE_SH_MATH",
@@ -167,6 +172,19 @@ class NativeDeveloperSeedTests(unittest.TestCase):
         required_n = {
             "CONFIG_AR", "CONFIG_FEATURE_AR_CREATE", "CONFIG_FEATURE_PREFER_APPLETS",
             "CONFIG_TC", "CONFIG_UDHCPC6", "CONFIG_FEATURE_SUID",
+            "CONFIG_FEATURE_VOLUMEID_BCACHE", "CONFIG_FEATURE_VOLUMEID_BTRFS",
+            "CONFIG_FEATURE_VOLUMEID_CRAMFS", "CONFIG_FEATURE_VOLUMEID_EROFS",
+            "CONFIG_FEATURE_VOLUMEID_EXFAT", "CONFIG_FEATURE_VOLUMEID_F2FS",
+            "CONFIG_FEATURE_VOLUMEID_FAT", "CONFIG_FEATURE_VOLUMEID_HFS",
+            "CONFIG_FEATURE_VOLUMEID_ISO9660", "CONFIG_FEATURE_VOLUMEID_JFS",
+            "CONFIG_FEATURE_VOLUMEID_LFS", "CONFIG_FEATURE_VOLUMEID_LINUXRAID",
+            "CONFIG_FEATURE_VOLUMEID_LINUXSWAP", "CONFIG_FEATURE_VOLUMEID_LUKS",
+            "CONFIG_FEATURE_VOLUMEID_MINIX", "CONFIG_FEATURE_VOLUMEID_NILFS",
+            "CONFIG_FEATURE_VOLUMEID_NTFS", "CONFIG_FEATURE_VOLUMEID_OCFS2",
+            "CONFIG_FEATURE_VOLUMEID_REISERFS", "CONFIG_FEATURE_VOLUMEID_ROMFS",
+            "CONFIG_FEATURE_VOLUMEID_SQUASHFS", "CONFIG_FEATURE_VOLUMEID_SYSV",
+            "CONFIG_FEATURE_VOLUMEID_UBIFS", "CONFIG_FEATURE_VOLUMEID_UDF",
+            "CONFIG_FEATURE_VOLUMEID_XFS",
         }
         config = self.write(
             "busybox.config",
@@ -323,7 +341,7 @@ class NativeDeveloperSeedTests(unittest.TestCase):
         root = self.root / "rootfs"
         for directory in (
             "bin", "etc/init.d", "etc/dropbear", "lost+found",
-            "root/.ssh", "tmp",
+            "root/.ssh", "tmp", "build",
         ):
             (root / directory).mkdir(parents=True, exist_ok=True)
         for relative in ("bin/busybox", "etc/init.d/rcS", "etc/init.d/rcK"):
@@ -1132,6 +1150,9 @@ class NativeDeveloperSeedTests(unittest.TestCase):
             (artifact / "configuration" / name).write_text(
                 json.dumps(root_inventory) + "\n"
             )
+        retained_helper = artifact / "configuration/deployment-preparation.sh"
+        shutil.copyfile(DEPLOYMENT_HELPER, retained_helper)
+        retained_helper.chmod(0o644)
         omitted = [
             {
                 "kind": "pem-private-test-key", "path": path,
@@ -1227,6 +1248,9 @@ class NativeDeveloperSeedTests(unittest.TestCase):
             "orchestration": {
                 "commit": "locked", "tree": "locked", "recipe_sha256": "recipe",
                 "overlay_digest": "overlay",
+                "deployment_helper_sha256": hashlib.sha256(
+                    retained_helper.read_bytes()
+                ).hexdigest(),
             },
             "dependencies": {
                 "sealed_cross_gcc": {"build_id": "gcc", "prefix": "/tools"},
@@ -1253,7 +1277,7 @@ class NativeDeveloperSeedTests(unittest.TestCase):
             },
             "network": {
                 "driver": "virtio-net", "interface": "eth0",
-                "configuration": "udhcpc-dhcpv4",
+                "configuration": "dhcpv4-default-static-file-optional",
                 "serial_discovery": "CAJUNOS_NATIVE_DEVELOPER_IPV4-canonical-ipv4",
                 "resolver_probe": "loopback-udp-dns-getaddrinfo-no-egress",
             },
@@ -1338,6 +1362,18 @@ class NativeDeveloperSeedTests(unittest.TestCase):
             "qemu.firmware.sha256", "b" * 64,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+        retained_bytes = retained_helper.read_bytes()
+        retained_helper.write_bytes(retained_bytes + b"\n")
+        retained_helper.chmod(0o644)
+        result = self.run_internal(
+            "validate-receipt", receipt_path, artifact, build_id,
+            "sources.dropbear.commit", "locked",
+            "qemu.firmware.sha256", "b" * 64,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        retained_helper.write_bytes(retained_bytes)
+        retained_helper.chmod(0o644)
 
         for label, path, value in (
             ("source", ("sources", "dropbear", "commit"), "mutated"),

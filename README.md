@@ -84,6 +84,33 @@ The approved owner key is installed from a public-key file during assembly;
 no private key or agent reaches the forge. Only the pristine, never-booted raw
 artifact is eligible for the later tower1 VM/template milestone.
 
+Before first boot on tower1, the privileged
+`prepare-native-developer-deployment` target derives—not replaces—the sealed
+16 GiB artifact. It creates a 64 GiB GPT/root-ext4 OS disk and a separate
+256 GiB GPT/ext4 package-build disk. The derivative root receives the exact
+build PARTUUID, filesystem UUID, sentinel hash, and persistent `/etc/fstab`
+intent; the build disk receives the matching sentinel. Boot discovers the
+partition by identity rather than `/dev/sdX`, verifies its geometry and ext4
+identity, mounts it at `/build` with executable package-workspace semantics,
+and emits `CAJUNOS_NATIVE_DEVELOPER_BUILD_VOLUME_OK` before SSH.
+The caller must supply the independently recorded Stage 9B receipt SHA-256;
+deriving that trust anchor from the receipt at deployment time is forbidden.
+Outputs are staged in private directories under root-owned, non-group/other-
+writable ancestor chains, replayed with forced read-only fsck and exact file
+checks, and only then completed by publishing the evidence JSON. Two separate
+preparations with the same identity tuple must produce byte-identical OS and
+build disks before either is eligible for import. The guest validates the build
+PARTUUID, ext4 UUID/type/label, exact capacity, and sentinel at runtime; the GPT
+build-disk GUID is validated offline and is explicitly not a runtime claim.
+
+The eventual template source is a stopped, never-booted imported derivative.
+Boot and SSH acceptance run only against disposable full clones; after those
+clones pass and are destroyed, the untouched source may become the template.
+Networking is DHCP by default and the pristine/template root omits
+`/etc/cajunos-static-network`. A particular VM may receive that strict
+three-line static-network contract only after its first DHCP/direct-SSH proof;
+the generic template never receives an instance address.
+
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.
 
