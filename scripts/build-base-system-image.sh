@@ -185,15 +185,18 @@ def validate_kernel_config(path):
 def validate_busybox_config(path):
     required_y = {
         "CONFIG_STATIC", "CONFIG_BUSYBOX", "CONFIG_FEATURE_INSTALLER",
-        "CONFIG_INSTALL_APPLET_SYMLINKS", "CONFIG_ASH", "CONFIG_SH_IS_ASH", "CONFIG_INIT",
+        "CONFIG_INSTALL_APPLET_SYMLINKS", "CONFIG_ASH", "CONFIG_SH_IS_ASH",
+        "CONFIG_FEATURE_SH_MATH", "CONFIG_INIT",
         "CONFIG_FEATURE_USE_INITTAB", "CONFIG_GETTY", "CONFIG_LOGIN",
         "CONFIG_USE_BB_CRYPT", "CONFIG_USE_BB_CRYPT_SHA",
-        "CONFIG_HALT", "CONFIG_MOUNT", "CONFIG_UMOUNT", "CONFIG_MDEV",
+        "CONFIG_HALT", "CONFIG_POWEROFF", "CONFIG_REBOOT",
+        "CONFIG_MOUNT", "CONFIG_UMOUNT", "CONFIG_MDEV",
         "CONFIG_SWAPON", "CONFIG_SWAPOFF",
         "CONFIG_HOSTNAME", "CONFIG_IP", "CONFIG_FEATURE_IP_ADDRESS",
         "CONFIG_FEATURE_IP_LINK", "CONFIG_FEATURE_IP_ROUTE", "CONFIG_UDHCPC",
         "CONFIG_CAT", "CONFIG_ECHO", "CONFIG_GREP", "CONFIG_MKDIR",
         "CONFIG_UNAME", "CONFIG_WC", "CONFIG_AWK", "CONFIG_TAR",
+        "CONFIG_STAT", "CONFIG_FEATURE_STAT_FORMAT", "CONFIG_TEST1",
     }
     required_n = {
         "CONFIG_TC", "CONFIG_UDHCPC6", "CONFIG_FEATURE_MOUNT_HELPERS",
@@ -736,6 +739,13 @@ def validate_ext4(path, filesystem_uuid, hash_seed):
 
 def normalized_serial(path):
     data = Path(path).read_bytes()
+    # GRUB's i386-pc serial terminal emits one deterministic clear-screen
+    # sequence before its first printable byte.  Remove only that exact
+    # byte-zero prologue; any other escape or a repeated prologue remains a
+    # fail-closed terminal-control injection.
+    grub_serial_prologue = b"\x1b[H\x1b[J\x1b[1;1H"
+    if data.startswith(grub_serial_prologue):
+        data = data[len(grub_serial_prologue):]
     if b"\x00" in data or b"\x1b" in data:
         fail("serial transcript contains terminal control bytes")
     try:

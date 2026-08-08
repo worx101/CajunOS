@@ -263,6 +263,16 @@ The positive clean-room probe attaches only the raw disk and a user-mode
 VirtIO NIC to a pinned Q35/SeaBIOS TCG machine. Init mounts the virtual filesystems,
 proves that the mounted root's major/minor resolves to the expected PARTUUID,
 configures `eth0` using a renewing DHCP daemon, and emits exact serial markers.
+It accepts the kernel's automatic devtmpfs mount only after `/proc/self/mountinfo`
+proves one `/dev` devtmpfs instance with the required root mode and console;
+otherwise it creates that mount itself or fails closed.
+The static BusyBox contract includes formatted `stat` output, shell arithmetic,
+the `test`/`[` pair, and distinct `halt`, `poweroff`, and `reboot` applets so
+those checks and every shutdown path are available in the sealed root.
+The immutable raw transcript retains GRUB's deterministic serial-terminal
+clear-screen prologue. Validation removes only that exact byte-zero sequence
+when creating the separate normalized transcript and rejects every other NUL,
+escape, or repeated prologue.
 The negative probe direct-loads the same kernel against the same GPT root image
 with the wrong locked token; it does not exercise GRUB a second time. It must
 power off after the exact `cmdline-token` failure without emitting build, root,

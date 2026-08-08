@@ -12,8 +12,32 @@ fail()
 
 echo CAJUNOS_BASE_SYSTEM_BEGIN
 
-/bin/mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev || fail devtmpfs
 /bin/mount -t proc -o nosuid,nodev,noexec proc /proc || fail proc
+dev_mount_count=$(/usr/bin/awk '
+    $5 == "/dev" { count++ }
+    END { print count + 0 }
+' /proc/self/mountinfo) || fail devtmpfs-inspect
+case "$dev_mount_count" in
+    0)
+        /bin/mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev \
+            || fail devtmpfs
+        ;;
+    1)
+        ;;
+    *)
+        fail devtmpfs-count
+        ;;
+esac
+/usr/bin/awk '
+    $5 == "/dev" {
+        count++
+        for (field = 7; field <= NF; field++)
+            if ($field == "-" && $(field + 1) == "devtmpfs") type++
+    }
+    END { exit !(count == 1 && type == 1) }
+' /proc/self/mountinfo || fail devtmpfs-type
+[ "$(/bin/stat -c '%u:%g:%a' /dev)" = 0:0:755 ] || fail devtmpfs-mode
+[ -c /dev/console ] || fail devtmpfs-console
 /bin/mount -t sysfs -o nosuid,nodev,noexec sysfs /sys || fail sysfs
 /bin/mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run || fail run
 /bin/mkdir -p /dev/pts

@@ -326,6 +326,7 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertIn("CONFIG_STATIC=y", busybox)
         self.assertIn("CONFIG_BUSYBOX=y", busybox)
         self.assertIn("CONFIG_FEATURE_INSTALLER=y", busybox)
+        self.assertIn("CONFIG_FEATURE_SH_MATH=y", busybox)
         self.assertIn(
             "# The locked revision makes FEATURE_INSTALLER depend directly on BUSYBOX.",
             busybox,
@@ -337,6 +338,13 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertIn("CONFIG_USE_BB_CRYPT=y", busybox)
         self.assertIn("CONFIG_USE_BB_CRYPT_SHA=y", busybox)
         self.assertIn("CONFIG_USE_BB_CRYPT_YES=n", busybox)
+        self.assertIn("CONFIG_HALT=y", busybox)
+        self.assertIn("CONFIG_POWEROFF=y", busybox)
+        self.assertIn("CONFIG_REBOOT=y", busybox)
+        self.assertIn("CONFIG_STAT=y", busybox)
+        self.assertIn("CONFIG_FEATURE_STAT_FORMAT=y", busybox)
+        self.assertIn("CONFIG_TEST=y", busybox)
+        self.assertIn("CONFIG_TEST1=y", busybox)
         self.assertLess(
             busybox.index("CONFIG_USE_BB_CRYPT=y"),
             busybox.index("CONFIG_USE_BB_CRYPT_SHA=y"),
@@ -363,6 +371,9 @@ class BaseSystemImageStageTests(unittest.TestCase):
             "CONFIG_BUSYBOX", "CONFIG_FEATURE_INSTALLER",
             "CONFIG_SWAPON", "CONFIG_SWAPOFF",
             "CONFIG_USE_BB_CRYPT", "CONFIG_USE_BB_CRYPT_SHA",
+            "CONFIG_POWEROFF", "CONFIG_REBOOT",
+            "CONFIG_STAT", "CONFIG_FEATURE_STAT_FORMAT", "CONFIG_TEST1",
+            "CONFIG_FEATURE_SH_MATH",
         ):
             with self.subTest(symbol=symbol):
                 busybox.write_text(
@@ -597,6 +608,15 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertIn('$field == "cajunos.base_system=1"', rc_s)
         self.assertNotIn("grep -o", rc_s)
         self.assertIn("/proc/self/mountinfo", rc_s)
+        self.assertLess(
+            rc_s.index("mount -t proc"), rc_s.index("dev_mount_count=")
+        )
+        self.assertIn('$5 == "/dev"', rc_s)
+        self.assertIn('$(field + 1) == "devtmpfs"', rc_s)
+        self.assertIn("fail devtmpfs-count", rc_s)
+        self.assertIn("fail devtmpfs-type", rc_s)
+        self.assertIn("fail devtmpfs-mode", rc_s)
+        self.assertIn("[ -c /dev/console ]", rc_s)
         self.assertIn("/sys/class/block/*", rc_s)
         self.assertIn("udhcpc", rc_s)
         self.assertNotIn("udhcpc -q", rc_s)
@@ -948,6 +968,40 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assert_accepts("validate-serial", "negative", negative, release, build_id)
         negative.write_text(negative.read_text() + "CAJUNOS_BASE_SYSTEM_OK\n")
         self.assert_rejects("validate-serial", "negative", negative, release, build_id)
+
+    def test_serial_normalizes_only_the_exact_grub_prologue(self) -> None:
+        build_id = "base-system-0d8395707651-deadbeefdeadbeef"
+        release = "7.2.0-rc6-cajunos+"
+        transcript = "\r\n".join(
+            (
+                "  Booting `CajunOS base system'",
+                "CAJUNOS_BASE_SYSTEM_BEGIN",
+                f"CAJUNOS_BASE_SYSTEM_BUILD_ID {build_id}",
+                "CAJUNOS_BASE_SYSTEM_ROOT_OK",
+                "CAJUNOS_BASE_SYSTEM_NETWORK_OK",
+                f"CAJUNOS_BASE_SYSTEM_UNAME {release}",
+                "CAJUNOS_BASE_SYSTEM_OK",
+            )
+        ).encode() + b"\r\n"
+        prologue = b"\x1b[H\x1b[J\x1b[1;1H"
+        raw = self.temporary_root / "grub-positive.raw"
+        normalized = self.temporary_root / "grub-positive.normalized"
+        raw.write_bytes(prologue + transcript)
+        self.assert_accepts(
+            "validate-serial", "positive", raw, release, build_id, normalized
+        )
+        self.assertEqual(normalized.read_bytes(), transcript.replace(b"\r\n", b"\n"))
+
+        for label, mutation in (
+            ("wrong", b"\x1b[J" + transcript),
+            ("repeated", prologue + prologue + transcript),
+            ("embedded", transcript + b"\x1b[J"),
+        ):
+            with self.subTest(label=label):
+                raw.write_bytes(mutation)
+                self.assert_rejects(
+                    "validate-serial", "positive", raw, release, build_id
+                )
 
     def test_receipt_contract_rejects_semantic_and_topology_tampering(self) -> None:
         artifact, receipt_path, build_id, expected = self.receipt_fixture()
