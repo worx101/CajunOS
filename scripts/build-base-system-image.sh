@@ -189,15 +189,64 @@ def validate_busybox_config(path):
     print(json.dumps({"keys": len(values), "tc": "disabled"}, sort_keys=True))
 
 
+def deterministic_tree_entries(root, root_metadata):
+    def reject_extended_metadata(path, relative):
+        try:
+            attributes = os.listxattr(path, follow_symlinks=False)
+        except OSError as error:
+            fail(f"tree extended-metadata scan failed at {relative}: {error}")
+        if attributes:
+            fail(
+                f"tree contains extended metadata at {relative}: "
+                + ", ".join(sorted(attributes))
+            )
+
+    def recurse(directory, relative, directory_metadata):
+        mode = stat.S_IMODE(directory_metadata.st_mode)
+        readable_and_searchable = any(
+            mode & permissions == permissions
+            for permissions in (0o500, 0o050, 0o005)
+        )
+        if not readable_and_searchable:
+            fail(f"tree contains an unreadable directory: {relative}")
+        try:
+            children = []
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    child_relative = (
+                        entry.name if relative == "." else f"{relative}/{entry.name}"
+                    )
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                    except OSError as error:
+                        fail(f"tree stat failed at {child_relative}: {error}")
+                    reject_extended_metadata(entry.path, child_relative)
+                    children.append((entry.name, Path(entry.path), metadata, child_relative))
+        except OSError as error:
+            fail(f"tree scan failed at {relative}: {error}")
+        for _name, path, metadata, child_relative in sorted(
+            children, key=lambda item: item[0]
+        ):
+            yield path, metadata, child_relative
+            if stat.S_ISDIR(metadata.st_mode):
+                yield from recurse(path, child_relative, metadata)
+
+    reject_extended_metadata(root, ".")
+    yield from recurse(root, ".", root_metadata)
+
+
 def inventory(root):
     root = Path(root)
-    metadata = root.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or root.is_symlink():
+    root_metadata = root.lstat()
+    if not stat.S_ISDIR(root_metadata.st_mode) or root.is_symlink():
         fail(f"inventory root is not a real directory: {root}")
-    entries = {".": {"type": "directory", "mode": f"{stat.S_IMODE(metadata.st_mode):04o}"}}
-    for path in sorted(root.rglob("*")):
-        metadata = path.lstat()
-        relative = path.relative_to(root).as_posix()
+    entries = {
+        ".": {
+            "type": "directory",
+            "mode": f"{stat.S_IMODE(root_metadata.st_mode):04o}",
+        }
+    }
+    for path, metadata, relative in deterministic_tree_entries(root, root_metadata):
         if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
             entries[relative] = {
                 "type": "directory", "mode": f"{stat.S_IMODE(metadata.st_mode):04o}"
@@ -207,7 +256,7 @@ def inventory(root):
                 "type": "file", "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
                 "size": metadata.st_size, "sha256": sha256(path),
             }
-        elif stat.S_ISLNK(metadata.st_mode):
+        elif stat.S_ISLNK(metadata.st_mode) and metadata.st_nlink == 1:
             target = os.readlink(path)
             if target.startswith("/"):
                 fail(f"inventory contains an escaping symlink: {relative} -> {target}")
@@ -220,8 +269,128 @@ def inventory(root):
                 "type": "symlink", "mode": "0777", "target": target,
             }
         else:
-            fail(f"inventory contains an unsupported entry: {relative}")
+            fail(f"inventory contains an unsupported or hard-linked entry: {relative}")
     return {"entries": entries, "digest": canonical_digest(entries)}
+
+
+OVERLAY_EXECUTABLES = {
+    "etc/init.d/rcS",
+    "etc/init.d/rcK",
+    "etc/udhcpc/default.script",
+}
+OVERLAY_REQUIRED_MODES = {
+    **{relative: "0755" for relative in OVERLAY_EXECUTABLES},
+    "etc/shadow": "0600",
+}
+
+
+def safe_internal_symlink(path, root, relative):
+    target = os.readlink(path)
+    if target.startswith("/"):
+        fail(f"tree contains an absolute symlink: {relative} -> {target}")
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root.resolve(strict=True))
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        fail(f"tree contains a broken or escaping symlink: {relative} -> {target}")
+    return target
+
+
+def reject_unsafe_checkout_mode(metadata, relative):
+    mode = stat.S_IMODE(metadata.st_mode)
+    if stat.S_ISDIR(metadata.st_mode):
+        if mode & 0o4000:
+            fail(f"tree contains a set-user-ID directory: {relative}")
+    elif mode & 0o6000:
+        fail(f"tree contains a set-id entry: {relative}")
+    if mode & 0o002:
+        fail(f"tree contains a world-writable checkout entry: {relative}")
+
+
+def canonical_overlay_inventory(root):
+    root = Path(root)
+    root_metadata = root.lstat()
+    if not stat.S_ISDIR(root_metadata.st_mode) or root.is_symlink():
+        fail("overlay root is not a real directory")
+    reject_unsafe_checkout_mode(root_metadata, ".")
+    entries = {".": {"type": "directory", "mode": "0755"}}
+    for path, metadata, relative in deterministic_tree_entries(root, root_metadata):
+        if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
+            reject_unsafe_checkout_mode(metadata, relative)
+            entries[relative] = {"type": "directory", "mode": "0755"}
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            reject_unsafe_checkout_mode(metadata, relative)
+            executable = bool(stat.S_IMODE(metadata.st_mode) & 0o111)
+            if executable != (relative in OVERLAY_EXECUTABLES):
+                fail(f"overlay executable-bit contract failed: {relative}")
+            mode = "0755" if executable else ("0600" if relative == "etc/shadow" else "0644")
+            entries[relative] = {
+                "type": "file", "mode": mode, "size": metadata.st_size,
+                "sha256": sha256(path),
+            }
+        elif stat.S_ISLNK(metadata.st_mode) and metadata.st_nlink == 1:
+            entries[relative] = {
+                "type": "symlink", "mode": "0777",
+                "target": safe_internal_symlink(path, root, relative),
+            }
+        else:
+            fail(f"overlay contains an unsupported or hard-linked entry: {relative}")
+    invalid_required = []
+    for relative, mode in sorted(OVERLAY_REQUIRED_MODES.items()):
+        entry = entries.get(relative)
+        if entry is None:
+            invalid_required.append(f"{relative}=missing")
+        elif entry.get("type") != "file" or entry.get("mode") != mode:
+            invalid_required.append(
+                f"{relative}={entry.get('type')}:{entry.get('mode')}"
+            )
+    if invalid_required:
+        fail("overlay required-file contract failed: " + ", ".join(invalid_required))
+    return {"entries": entries, "digest": canonical_digest(entries)}
+
+
+def canonicalize_root(root):
+    root = Path(root)
+    root_metadata = root.lstat()
+    if not stat.S_ISDIR(root_metadata.st_mode) or root.is_symlink():
+        fail("root tree is not a real directory")
+    reject_unsafe_checkout_mode(root_metadata, ".")
+    directories = [root]
+    files = []
+    for path, metadata, relative in deterministic_tree_entries(root, root_metadata):
+        if stat.S_ISDIR(metadata.st_mode) and not path.is_symlink():
+            reject_unsafe_checkout_mode(metadata, relative)
+            directories.append(path)
+        elif stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            reject_unsafe_checkout_mode(metadata, relative)
+            files.append(path)
+        elif stat.S_ISLNK(metadata.st_mode) and metadata.st_nlink == 1:
+            safe_internal_symlink(path, root, relative)
+        else:
+            fail(f"root tree contains an unsupported or hard-linked entry: {relative}")
+    for path in directories:
+        path.chmod(0o755)
+    for path in files:
+        path.chmod(0o644)
+    required_modes = {
+        "bin/busybox": 0o755,
+        "etc/init.d/rcS": 0o755,
+        "etc/init.d/rcK": 0o755,
+        "etc/udhcpc/default.script": 0o755,
+        "etc/shadow": 0o600,
+        "root": 0o700,
+        "tmp": 0o1777,
+    }
+    for relative, mode in required_modes.items():
+        path = root / relative
+        metadata = path.lstat()
+        if relative in {"root", "tmp"}:
+            if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+                fail(f"canonical root path is not a directory: {relative}")
+        elif not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            fail(f"canonical root path is not a plain file: {relative}")
+        path.chmod(mode)
+    print(json.dumps(inventory(root), indent=2, sort_keys=True))
 
 
 def validate_gpt(path, disk_guid, bios_guid, root_guid, root_first):
@@ -604,6 +773,14 @@ elif command == "inventory":
     if len(arguments) != 1:
         fail("inventory requires ROOT")
     print(json.dumps(inventory(arguments[0]), indent=2, sort_keys=True))
+elif command == "overlay-inventory":
+    if len(arguments) != 1:
+        fail("overlay-inventory requires ROOT")
+    print(json.dumps(canonical_overlay_inventory(arguments[0]), indent=2, sort_keys=True))
+elif command == "canonicalize-root":
+    if len(arguments) != 1:
+        fail("canonicalize-root requires ROOT")
+    canonicalize_root(arguments[0])
 elif command == "compare-json":
     if len(arguments) != 2:
         fail("compare-json requires FIRST SECOND")
@@ -921,7 +1098,7 @@ initial_sysroot_selector=$(readlink -- "$sysroot_selector")
 recipe_sha256=$(sha256sum "$script_path" | awk '{print $1}')
 kernel_fragment_sha256=$(sha256sum "$kernel_fragment" | awk '{print $1}')
 busybox_fragment_sha256=$(sha256sum "$busybox_fragment" | awk '{print $1}')
-overlay_inventory=$("$script_path" --internal-python inventory "$overlay")
+overlay_inventory=$("$script_path" --internal-python overlay-inventory "$overlay")
 overlay_digest=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])' <<<"$overlay_inventory")
 tools_receipt_sha256=$(sha256sum "$tools_receipt" | awk '{print $1}')
 glibc_receipt_sha256=$(sha256sum "$glibc_receipt" | awk '{print $1}')
@@ -1370,12 +1547,9 @@ menuentry 'CajunOS base system' {
     linux /boot/vmlinuz-$kernel_release $positive_cmdline
 }
 EOF
-  chmod 0644 "$root/etc/cajunos-build-id" "$root/etc/cajunos-root-partuuid" \
-    "$root/boot/grub/grub.cfg"
-  chmod 0700 "$root/root"
-  chmod 1777 "$root/tmp"
+  "$script_path" --internal-python canonicalize-root "$root" \
+    >"$temporary_root/root-$label.json"
   find "$root" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-  "$script_path" --internal-python inventory "$root" >"$temporary_root/root-$label.json"
 }
 
 make_ext4() {

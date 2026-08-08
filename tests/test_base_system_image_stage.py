@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import binascii
+import errno
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import stat
 import struct
 import subprocess
@@ -103,6 +106,32 @@ class BaseSystemImageStageTests(unittest.TestCase):
     def assert_rejects(self, *arguments: object) -> None:
         result = self.internal(*arguments)
         self.assertNotEqual(result.returncode, 0, "validator accepted a mutated fixture")
+
+    def root_tree_fixture(self, name: str) -> Path:
+        root = self.temporary_root / name
+        shutil.copytree(OVERLAY, root)
+        for relative in ("bin", "sbin", "root", "tmp", "var"):
+            (root / relative).mkdir(parents=True, exist_ok=True)
+        (root / "bin/busybox").write_bytes(b"busybox")
+        (root / "sbin/init").symlink_to("../bin/busybox")
+        return root
+
+    def set_named_acl(self, path: Path, specification: str) -> None:
+        setfacl = shutil.which("setfacl")
+        if setfacl is None:
+            self.skipTest("setfacl is unavailable")
+        result = subprocess.run(
+            [setfacl, "-m", specification, path],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode:
+            unsupported = ("not supported", "not implemented")
+            if any(marker in result.stderr.lower() for marker in unsupported):
+                self.skipTest(f"POSIX ACLs are unavailable: {result.stderr.strip()}")
+            self.fail(f"setfacl failed: {result.stderr.strip()}")
 
     def receipt_fixture(self) -> tuple[Path, Path, str, list[str]]:
         artifact = self.temporary_root / "artifact"
@@ -280,16 +309,93 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assert_rejects("validate-busybox-config", busybox)
 
     def test_overlay_is_locked_serial_dhcp_init_with_locked_root(self) -> None:
-        required_modes = {
-            "etc/init.d/rcS": 0o755,
-            "etc/init.d/rcK": 0o755,
-            "etc/udhcpc/default.script": 0o755,
-            "etc/shadow": 0o600,
+        executable_paths = {
+            "etc/init.d/rcS",
+            "etc/init.d/rcK",
+            "etc/udhcpc/default.script",
         }
-        for relative, mode in required_modes.items():
-            path = OVERLAY / relative
-            self.assertTrue(path.is_file() and not path.is_symlink())
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), mode)
+        tracked = subprocess.run(
+            ["git", "ls-files", "--stage", "--", OVERLAY.relative_to(PROJECT)],
+            cwd=PROJECT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        index_modes = {}
+        for line in tracked.stdout.splitlines():
+            mode, _object, _stage, path = line.split(maxsplit=3)
+            relative = Path(path).relative_to(OVERLAY.relative_to(PROJECT)).as_posix()
+            index_modes[relative] = mode
+        self.assertTrue(index_modes)
+        self.assertEqual(
+            {relative for relative, mode in index_modes.items() if mode == "100755"},
+            executable_paths,
+        )
+        self.assertTrue(
+            all(
+                mode == ("100755" if relative in executable_paths else "100644")
+                for relative, mode in index_modes.items()
+            )
+        )
+
+        canonical = self.internal("overlay-inventory", OVERLAY)
+        self.assertEqual(canonical.returncode, 0, canonical.stderr)
+        canonical_inventory = json.loads(canonical.stdout)
+        shared_overlay = self.temporary_root / "shared-overlay"
+        shutil.copytree(OVERLAY, shared_overlay)
+        for path in [shared_overlay, *sorted(shared_overlay.rglob("*"))]:
+            if path.is_symlink():
+                continue
+            if path.is_dir():
+                path.chmod(0o2775)
+            elif path.is_file():
+                relative = path.relative_to(shared_overlay).as_posix()
+                path.chmod(0o775 if relative in executable_paths else 0o664)
+        self.assertEqual(stat.S_IMODE(shared_overlay.stat().st_mode), 0o2775)
+        self.assertEqual(
+            stat.S_IMODE((shared_overlay / "etc/init.d").stat().st_mode), 0o2775
+        )
+        shared = self.internal("overlay-inventory", shared_overlay)
+        self.assertEqual(shared.returncode, 0, shared.stderr)
+        self.assertEqual(json.loads(shared.stdout), canonical_inventory)
+        entries = canonical_inventory["entries"]
+        for relative, entry in entries.items():
+            if entry["type"] == "directory":
+                self.assertEqual(entry["mode"], "0755", relative)
+            elif entry["type"] == "file":
+                expected = (
+                    "0755" if relative in executable_paths
+                    else "0600" if relative == "etc/shadow"
+                    else "0644"
+                )
+                self.assertEqual(entry["mode"], expected, relative)
+
+        required_symlinks = {
+            "etc/init.d/rcS": "rcK",
+            "etc/init.d/rcK": "rcS",
+            "etc/udhcpc/default.script": "../init.d/rcS",
+            "etc/shadow": "passwd",
+        }
+        for index, (relative, target) in enumerate(required_symlinks.items()):
+            fixture = self.temporary_root / f"required-symlink-{index}"
+            shutil.copytree(shared_overlay, fixture, symlinks=True)
+            required = fixture / relative
+            required.unlink()
+            required.symlink_to(target)
+            self.assertTrue(required.resolve(strict=True).is_file())
+            self.assert_rejects("overlay-inventory", fixture)
+
+        unsafe = shared_overlay / "etc/hostname"
+        unsafe.chmod(0o666)
+        self.assert_rejects("overlay-inventory", shared_overlay)
+        unsafe.chmod(0o664)
+        unsafe = shared_overlay / "etc/init.d/rcS"
+        unsafe.chmod(0o4775)
+        self.assert_rejects("overlay-inventory", shared_overlay)
+        unsafe.chmod(0o2775)
+        self.assert_rejects("overlay-inventory", shared_overlay)
+
         rc_s = (OVERLAY / "etc/init.d/rcS").read_text(encoding="utf-8")
         self.assertIn("CAJUNOS_BASE_SYSTEM_OK", rc_s)
         self.assertIn("cajunos.base_system=1", rc_s)
@@ -308,6 +414,161 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assertIn('/bin/kill -0 "$udhcpc_pid"', rc_s)
         self.assertIn("fail dhcp-renewal", rc_s)
         self.assertEqual((OVERLAY / "etc/shadow").read_text().split(":", 2)[1], "!")
+
+    def test_root_tree_modes_are_canonicalized_before_ext4_population(self) -> None:
+        executable_paths = {
+            "bin/busybox",
+            "etc/init.d/rcS",
+            "etc/init.d/rcK",
+            "etc/udhcpc/default.script",
+        }
+        root = self.temporary_root / "root"
+        shutil.copytree(OVERLAY, root)
+        for relative in ("bin", "sbin", "boot/grub", "root", "tmp"):
+            (root / relative).mkdir(parents=True, exist_ok=True)
+        (root / "bin/busybox").write_bytes(b"busybox")
+        (root / "boot/grub/grub.cfg").write_text("serial\n", encoding="utf-8")
+        (root / "sbin/init").symlink_to("../bin/busybox")
+        for path in [root, *sorted(root.rglob("*"))]:
+            if path.is_symlink():
+                continue
+            if path.is_dir():
+                path.chmod(0o2775)
+            elif path.is_file():
+                relative = path.relative_to(root).as_posix()
+                path.chmod(0o775 if relative in executable_paths else 0o664)
+        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o2775)
+        self.assertEqual(stat.S_IMODE((root / "etc").stat().st_mode), 0o2775)
+        self.assertEqual(stat.S_IMODE((root / "root").stat().st_mode), 0o2775)
+
+        result = self.internal("canonicalize-root", root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        inventory = json.loads(result.stdout)["entries"]
+        for relative, entry in inventory.items():
+            path = root if relative == "." else root / relative
+            self.assertEqual(entry["mode"], f"{stat.S_IMODE(path.lstat().st_mode):04o}")
+            if entry["type"] == "directory":
+                expected = "0700" if relative == "root" else "1777" if relative == "tmp" else "0755"
+            elif entry["type"] == "file":
+                expected = (
+                    "0755" if relative in executable_paths
+                    else "0600" if relative == "etc/shadow"
+                    else "0644"
+                )
+            else:
+                expected = "0777"
+            self.assertEqual(entry["mode"], expected, relative)
+        self.assertEqual((root / "sbin/init").readlink().as_posix(), "../bin/busybox")
+
+        recipe = SCRIPT.read_text(encoding="utf-8")
+        make_root = recipe.split("make_root() {", 1)[1].split("make_ext4() {", 1)[0]
+        self.assertIn('--internal-python canonicalize-root "$root"', make_root)
+        self.assertNotIn('--internal-python inventory "$root"', make_root)
+
+    def test_overlay_inventory_rejects_hard_linked_symlinks(self) -> None:
+        overlay = self.temporary_root / "overlay"
+        shutil.copytree(OVERLAY, overlay)
+        source = overlay / "etc/safe-link"
+        alias = overlay / "etc/safe-link.alias"
+        source.symlink_to("hostname")
+        try:
+            os.link(source, alias, follow_symlinks=False)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"hard-linked symlinks are unavailable: {error}")
+        self.assertEqual(source.lstat().st_nlink, 2)
+        self.assertEqual(alias.lstat().st_nlink, 2)
+        self.assert_rejects("overlay-inventory", overlay)
+
+    def test_generic_inventory_and_root_reject_hard_linked_symlinks(self) -> None:
+        root = self.root_tree_fixture("hardlink-root")
+        source = root / "sbin/init"
+        alias = root / "sbin/init.alias"
+        try:
+            os.link(source, alias, follow_symlinks=False)
+        except (NotImplementedError, OSError) as error:
+            self.skipTest(f"hard-linked symlinks are unavailable: {error}")
+        self.assertEqual(source.lstat().st_nlink, 2)
+        self.assertEqual(alias.lstat().st_nlink, 2)
+        self.assert_rejects("inventory", root)
+        self.assert_rejects("canonicalize-root", root)
+
+    def test_tree_walkers_cannot_omit_an_unreadable_directory(self) -> None:
+        overlay = self.temporary_root / "unreadable-overlay"
+        shutil.copytree(OVERLAY, overlay)
+        hidden = overlay / "hidden"
+        hidden.mkdir()
+        payload = hidden / "payload"
+        payload.write_bytes(b"unsafe")
+        payload.chmod(0o666)
+        hidden.chmod(0o100)
+        self.assertEqual(stat.S_IMODE(hidden.stat().st_mode), 0o100)
+        self.assertEqual(stat.S_IMODE(payload.stat().st_mode), 0o666)
+        try:
+            self.assert_rejects("inventory", overlay)
+            self.assert_rejects("overlay-inventory", overlay)
+        finally:
+            hidden.chmod(0o700)
+
+        root = self.temporary_root / "unreadable-root"
+        shutil.copytree(OVERLAY, root)
+        for relative in ("bin", "sbin", "root", "tmp"):
+            (root / relative).mkdir(parents=True, exist_ok=True)
+        (root / "bin/busybox").write_bytes(b"busybox")
+        (root / "sbin/init").symlink_to("../bin/busybox")
+        hidden = root / "hidden"
+        hidden.mkdir()
+        payload = hidden / "payload"
+        payload.write_bytes(b"unsafe")
+        payload.chmod(0o666)
+        hidden.chmod(0o100)
+        try:
+            self.assert_rejects("canonicalize-root", root)
+        finally:
+            hidden.chmod(0o700)
+
+    def test_tree_walkers_reject_user_extended_attributes(self) -> None:
+        overlay = self.temporary_root / "xattr-overlay"
+        shutil.copytree(OVERLAY, overlay)
+        try:
+            os.setxattr(
+                overlay, "user.cajunos-test", b"present", follow_symlinks=False
+            )
+        except (AttributeError, OSError) as error:
+            unsupported_errors = {
+                getattr(errno, "ENOTSUP", -1),
+                getattr(errno, "EOPNOTSUPP", -1),
+                getattr(errno, "ENOSYS", -1),
+            }
+            if isinstance(error, AttributeError) or error.errno in unsupported_errors:
+                self.skipTest(f"user extended attributes are unavailable: {error}")
+            raise
+        self.assertIn("user.cajunos-test", os.listxattr(overlay, follow_symlinks=False))
+        self.assert_rejects("inventory", overlay)
+        self.assert_rejects("overlay-inventory", overlay)
+
+        root = self.root_tree_fixture("xattr-root")
+        os.setxattr(root, "user.cajunos-test", b"present", follow_symlinks=False)
+        self.assert_rejects("canonicalize-root", root)
+
+    def test_tree_walkers_reject_named_access_and_default_acls(self) -> None:
+        overlay = self.temporary_root / "acl-overlay"
+        shutil.copytree(OVERLAY, overlay)
+        acl_file = overlay / "etc/hostname"
+        self.set_named_acl(acl_file, "u:65534:r--")
+        self.assertIn(
+            "system.posix_acl_access",
+            os.listxattr(acl_file, follow_symlinks=False),
+        )
+        self.assert_rejects("inventory", overlay)
+        self.assert_rejects("overlay-inventory", overlay)
+
+        root = self.root_tree_fixture("acl-root")
+        acl_directory = root / "var"
+        self.set_named_acl(acl_directory, "u:65534:r-x,d:u:65534:r-x")
+        attributes = set(os.listxattr(acl_directory, follow_symlinks=False))
+        self.assertIn("system.posix_acl_access", attributes)
+        self.assertIn("system.posix_acl_default", attributes)
+        self.assert_rejects("canonicalize-root", root)
 
     def test_inventory_accepts_busybox_links_but_rejects_real_escape(self) -> None:
         root = self.temporary_root / "root"
