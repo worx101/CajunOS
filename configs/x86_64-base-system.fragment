@@ -47,6 +47,8 @@ CONFIG_SYSFS=y
 CONFIG_TMPFS=y
 CONFIG_TMPFS_XATTR=y
 
+# Linux CONFIG_VT defaults y when its prompt is hidden; headless VT disable requires CONFIG_EXPERT=y.
+CONFIG_EXPERT=y
 CONFIG_TTY=y
 CONFIG_VT=n
 CONFIG_SERIAL_8250=y

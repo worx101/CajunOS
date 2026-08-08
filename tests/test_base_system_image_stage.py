@@ -307,9 +307,16 @@ class BaseSystemImageStageTests(unittest.TestCase):
             "CONFIG_VIRTIO_NET=y", "CONFIG_EXT4_FS=y",
             "CONFIG_EFI_PARTITION=y", "CONFIG_RANDOMIZE_BASE=y",
             "CONFIG_STACKPROTECTOR_STRONG=y", "CONFIG_FORTIFY_SOURCE=y",
+            "CONFIG_EXPERT=y", "CONFIG_VT=n",
         ):
             self.assertIn(line, kernel)
         self.assertIn("CONFIG_MODULES=n", kernel)
+        self.assertIn(
+            "# Linux CONFIG_VT defaults y when its prompt is hidden; "
+            "headless VT disable requires CONFIG_EXPERT=y.",
+            kernel,
+        )
+        self.assertLess(kernel.index("CONFIG_EXPERT=y"), kernel.index("CONFIG_VT=n"))
 
         busybox = BUSYBOX_FRAGMENT.read_text(encoding="utf-8")
         self.assertIn("CONFIG_STATIC=y", busybox)
@@ -333,6 +340,41 @@ class BaseSystemImageStageTests(unittest.TestCase):
         self.assert_accepts("validate-busybox-config", busybox)
         busybox.write_text(busybox.read_text().replace("CONFIG_TC=n", "CONFIG_TC=y"))
         self.assert_rejects("validate-busybox-config", busybox)
+
+    def test_headless_vt_resolved_contract_requires_expert(self) -> None:
+        resolved = (
+            KERNEL_FRAGMENT.read_text(encoding="utf-8")
+            + "\nCONFIG_64BIT=y\nCONFIG_X86_64=y\n"
+        )
+        kernel = self.temporary_root / "resolved-kernel.config"
+        kernel.write_text(resolved, encoding="utf-8")
+        self.assert_accepts("validate-kernel-config", kernel)
+
+        for old, new, diagnostic in (
+            (
+                "CONFIG_EXPERT=y",
+                "# CONFIG_EXPERT is not set",
+                "required configuration is not enabled: CONFIG_EXPERT",
+            ),
+            (
+                "CONFIG_VT=n",
+                "CONFIG_VT=y",
+                "forbidden configuration is enabled: CONFIG_VT",
+            ),
+        ):
+            with self.subTest(mutation=new):
+                kernel.write_text(resolved.replace(old, new), encoding="utf-8")
+                result = self.internal("validate-kernel-config", kernel)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+
+        recipe = SCRIPT.read_text(encoding="utf-8").split(
+            "build_kernel() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertLess(recipe.index("merge-kconfig"), recipe.index("olddefconfig"))
+        self.assertLess(
+            recipe.index("olddefconfig"), recipe.index("validate-kernel-config")
+        )
 
     def test_selected_tool_topology_is_exact_and_fail_closed(self) -> None:
         tools, selected, binutils, target = self.selected_tools_fixture("accepted")
