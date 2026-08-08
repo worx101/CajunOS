@@ -37,6 +37,13 @@ CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make gcc-complete
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make kernel-first-boot
 make fetch-base-system
 CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make base-system-image
+make fetch-native-developer
+export CAJUNOS_GPGV=/sealed/path/gpgv
+export CAJUNOS_GPGV_LIBRARY_ROOT=/sealed/path/gpgv-library-root
+make validate-native-developer
+CAJUNOS_BASE_SYSTEM_BUILD_ID=base-system-... \
+CAJUNOS_OWNER_SSH_PUBLIC_KEY=/trusted/path/cajunos-owner.pub \
+CAJUNOS_ACCEPT_UNAUTHENTICATED_SOURCES=1 make native-developer-seed
 ```
 
 That environment variable is required only because this committed cohort
@@ -65,6 +72,17 @@ static base userland, deterministic ext4 filesystem, and deterministic GPT/BIOS
 raw disk twice. Publication requires a disk-only GRUB boot with renewing DHCP over
 VirtIO and a separate fail-closed command-line probe. SSH and the native package
 toolchain intentionally remain in the following developer-seed milestone.
+
+The native-developer-seed stage consumes one explicit sealed base-system
+receipt and grows its raw GPT disk to 16 GiB with a reproducible 12 GiB
+journaled ext4 root. It installs native Binutils, GCC/G++, libgcc, libatomic,
+libstdc++, GNU Make, static BusyBox, and static key-only Dropbear together with
+the locked source trees. Two independent builds must match byte-for-byte, then
+QEMU proves disk-only GRUB boot, canonical IPv4 serial discovery, public-key
+SSH with a PTY, clean persistence across reboot, and native package rebuilds.
+The approved owner key is installed from a public-key file during assembly;
+no private key or agent reaches the forge. Only the pristine, never-booted raw
+artifact is eligible for the later tower1 VM/template milestone.
 
 See [`docs/bootstrap.md`](docs/bootstrap.md) for the staged bootstrap design,
 workspace contract, and verification rules.

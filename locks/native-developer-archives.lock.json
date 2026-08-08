@@ -1,0 +1,223 @@
+{
+  "components": [
+    {
+      "archive": {
+        "bytes": 2348200,
+        "filename": "make-4.4.1.tar.gz",
+        "sha256": "dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3",
+        "sha512": "145260cbd6a8226cef3dfef0c8baba31847beaebc7e6b65d39d02715fd4f4cab9b139b6c3772e550088d4f9ae80c6d3ed20b9a7664c693644dfb96b4cb60e67c",
+        "url": "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz"
+      },
+      "key": {
+        "armored": true,
+        "bytes": 6385,
+        "derived_keyring_sha256": "389ee267a343acb2e202de7136d6237985fd665d7c108816666bf264b8394f48",
+        "filename": "paul-smith.asc",
+        "sha256": "b205bf6396f8adc18a6a65d7e7d69feb9f3a2ada1f17903f55ba042781d9bc54",
+        "sha512": "225dd89ba4b0cadaf23c7df34fa1c0b8d46bc8957618543a39b52cda462bff5e9f4774b490806fc841aa11047f19f89c1e15c5c4da1d20332cd7e1dd0d84a446",
+        "url": "https://savannah.gnu.org/people/viewgpg.php?user_id=260"
+      },
+      "licenses": {
+        "COPYING": "e79e9c8a0c85d735ff98185918ec94ed7d175efc377012787aebcf3b80f0d90b",
+        "README": "21e8a99fb97a6f175d25eafe67d6b8645c11077ba9a7c54d8e37ecea00045004"
+      },
+      "name": "make",
+      "signature": {
+        "bytes": 833,
+        "filename": "make-4.4.1.tar.gz.sig",
+        "hash_algorithm": 10,
+        "primary_fingerprint": "6D4EEB02AD834703510B117680CB727A20C79BB2",
+        "public_key_algorithm": 1,
+        "sha256": "b0085e6c3f9a7461e739786a8d28dec9aeb090335bb8818e42b497fdeb73b929",
+        "sha512": "d7a5531c10f216d690ec036f3875c7f314fa53006e138568c60132d506db48d1a59201623e168091dafa4465b005991019e42f81ff1a96a44610b6b18de08b09",
+        "signer_fingerprint": "B2508A90102F8AE3B12A0090DEACCAAEDB78137A",
+        "signing_epoch": 1677441979,
+        "url": "https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz.sig"
+      },
+      "topology": {
+        "declared_bytes": 8780526,
+        "directories": 21,
+        "files": 395,
+        "links": 0,
+        "member_digest": "a99b188bb9c627074f9d742f941766fdd1138b88406123cbd46edb7118341321",
+        "members": 416,
+        "top_level": "make-4.4.1"
+      },
+      "version": "4.4.1"
+    },
+    {
+      "archive": {
+        "bytes": 2643888,
+        "filename": "gmp-6.3.0.tar.bz2",
+        "sha256": "ac28211a7cfb609bae2e2c8d6058d66c8fe96434f740cf6fe2e47b000d1c20cb",
+        "sha512": "3b684c9bcb9ede2b7e54d0ba4c9764bfa17c20d4f3000017c553b6f1e135b536949580ff37341680c25dc236cfe0ba1db8cfdfe619ce013656189ef0871b89f8",
+        "url": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.bz2"
+      },
+      "gcc_prerequisite_sha512": "3b684c9bcb9ede2b7e54d0ba4c9764bfa17c20d4f3000017c553b6f1e135b536949580ff37341680c25dc236cfe0ba1db8cfdfe619ce013656189ef0871b89f8",
+      "key": {
+        "armored": false,
+        "bytes": 21810,
+        "derived_keyring_sha256": "1235812a12ce07515303f9ebb138225e4021342832c1465040fee2e849524888",
+        "filename": "niels-distribution-key.gpg",
+        "sha256": "1235812a12ce07515303f9ebb138225e4021342832c1465040fee2e849524888",
+        "sha512": "030b8505654cff3e6c8105fdd4a751d53e6e06d2014815a2b1de10bf609768e7645f859f7b28b49a1440dbd8c1d700425eb54baea8b9fe75fb55658f48a2afb1",
+        "url": "https://www.lysator.liu.se/~nisse/archive/distribution-key.gpg"
+      },
+      "licenses": {
+        "COPYING": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+        "COPYING.LESSERv3": "a853c2ffec17057872340eee242ae4d96cbf2b520ae27d903e1b2fef1a5f9d1c",
+        "COPYINGv2": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+        "COPYINGv3": "e6037104443f9a7829b2aa7c5370d0789a7bda3ca65a0b904cdc0c2e285d9195",
+        "README": "5e9f9325fd702bc4bcda27d7a78fea88a2a09fa39b4b15ac7b9b205e0863dc7e"
+      },
+      "name": "gmp",
+      "signature": {
+        "bytes": 374,
+        "filename": "gmp-6.3.0.tar.bz2.sig",
+        "hash_algorithm": 10,
+        "primary_fingerprint": "343C2FF0FBEE5EC2EDBEF399F3599FF828C67298",
+        "public_key_algorithm": 1,
+        "sha256": "2a7df8bf6f026601dec3f21e00bf5b2901d81d48e64bba33a98b74b77cd41357",
+        "sha512": "2420d83da3a6c64149f3e6fc4dc1df6248a431805bd6ae6fb73738c0df27e06e4ae33372e98adc05eb1dd51a1bf9f282f62cb4c923ddea96af36407b3c9cba47",
+        "signer_fingerprint": "343C2FF0FBEE5EC2EDBEF399F3599FF828C67298",
+        "signing_epoch": 1690719495,
+        "url": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.bz2.sig"
+      },
+      "topology": {
+        "declared_bytes": 16998222,
+        "directories": 187,
+        "files": 2156,
+        "links": 0,
+        "member_digest": "0724c815a3836b69a7543c7c6a5bd08872d023e4656a844f84d7c723c8186b4d",
+        "members": 2343,
+        "top_level": "gmp-6.3.0"
+      },
+      "version": "6.3.0"
+    },
+    {
+      "archive": {
+        "bytes": 1753999,
+        "filename": "mpfr-4.2.2.tar.bz2",
+        "sha256": "9ad62c7dc910303cd384ff8f1f4767a655124980bb6d8650fe62c815a231bb7b",
+        "sha512": "0176e50808dcc07afbf5bc3e38bf9b7b21918e5f194aa0bfd860d99b00c470630aef149776c4be814a61c44269c3a5b9a4b0b1c0fcd4c9feb1459d8466452da8",
+        "url": "https://www.mpfr.org/mpfr-4.2.2/mpfr-4.2.2.tar.bz2"
+      },
+      "gcc_prerequisite_sha512": "0176e50808dcc07afbf5bc3e38bf9b7b21918e5f194aa0bfd860d99b00c470630aef149776c4be814a61c44269c3a5b9a4b0b1c0fcd4c9feb1459d8466452da8",
+      "key": {
+        "armored": true,
+        "bytes": 15034,
+        "derived_keyring_sha256": "f982578bf89e9ebff5fbeb5bc914fd581a11f75300d5caad88b2fbc482d9f311",
+        "filename": "vinc17-key.asc",
+        "sha256": "c534c66170c22555573751da626d0bbef8d032b61d03be9cf8be7571dd07ab07",
+        "sha512": "ab857ddb8e4510dc4c7a020a6b565edcc23c85ac04436c1789e632780e47531d7f49dbd0be3da68f3b226c841ff5ca42d4c596c1dd417fa3a46d63bc5ec5fc87",
+        "url": "https://www.vinc17.net/key.asc"
+      },
+      "licenses": {
+        "COPYING": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "COPYING.LESSER": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+        "README": "74e733d2cfa1a6f4e6530326ed460f13ac9e4a5d79bb0f682ab67db2c9dc4d5b"
+      },
+      "name": "mpfr",
+      "signature": {
+        "bytes": 228,
+        "filename": "mpfr-4.2.2.tar.bz2.asc",
+        "hash_algorithm": 8,
+        "primary_fingerprint": "A534BE3F83E241D918280AEB5831D11A0D4DB02A",
+        "public_key_algorithm": 22,
+        "sha256": "18220375bde707db23584b00b9b009f5a290719d135d5b372e4f302fc2ab72c3",
+        "sha512": "86b2c2a52fbfd4a56b3c3876e9cb606322fe9f64b59c0729b526474ff4bb7c671f384792810bff4f6cff6bcc43afbedc61b8fbb85a4a331d266b21ebff625b40",
+        "signer_fingerprint": "A534BE3F83E241D918280AEB5831D11A0D4DB02A",
+        "signing_epoch": 1742462539,
+        "url": "https://www.mpfr.org/mpfr-4.2.2/mpfr-4.2.2.tar.bz2.asc"
+      },
+      "topology": {
+        "declared_bytes": 9590620,
+        "directories": 19,
+        "files": 572,
+        "links": 0,
+        "member_digest": "f47a9a01dee913382c02a45a6ddb9558a136e42086b609ba6107a3693cc5ae30",
+        "members": 591,
+        "top_level": "mpfr-4.2.2"
+      },
+      "version": "4.2.2"
+    },
+    {
+      "archive": {
+        "bytes": 773573,
+        "filename": "mpc-1.3.1.tar.gz",
+        "sha256": "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8",
+        "sha512": "4bab4ef6076f8c5dfdc99d810b51108ced61ea2942ba0c1c932d624360a5473df20d32b300fc76f2ba4aa2a97e1f275c9fd494a1ba9f07c4cb2ad7ceaeb1ae97",
+        "url": "https://www.multiprecision.org/downloads/mpc-1.3.1.tar.gz"
+      },
+      "gcc_prerequisite_sha512": "4bab4ef6076f8c5dfdc99d810b51108ced61ea2942ba0c1c932d624360a5473df20d32b300fc76f2ba4aa2a97e1f275c9fd494a1ba9f07c4cb2ad7ceaeb1ae97",
+      "key": {
+        "armored": true,
+        "bytes": 124014,
+        "derived_keyring_sha256": "7d38d30eb4515477ff78cd6cb3dc8b3b23ebd9531e0b573122265656efe0660b",
+        "filename": "enge.gpg",
+        "sha256": "dae0bf8d40b5e3cbb64b3c98fbcf48857f983b8bf811f761a206ebae75f040a8",
+        "sha512": "b025f4d1f073305b47f70faddf8e4c504024c62c0d0c690b0a340571af9a1ed731bfd6bae4bfb5430e758fb40a2cf68a009c449e4153d3a56278dc175b41636f",
+        "url": "https://www.multiprecision.org/downloads/enge.gpg"
+      },
+      "licenses": {
+        "COPYING.LESSER": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+        "README": "a29757036ba9107e2174b084749732689d9b893bfdd343dfd2e64559d54f72f6",
+        "src/mpc.h": "bca641f4c59f5303d3212650cc00fec0ee2659a220067535dee9029761e83849"
+      },
+      "name": "mpc",
+      "signature": {
+        "bytes": 119,
+        "filename": "mpc-1.3.1.tar.gz.sig",
+        "hash_algorithm": 8,
+        "historical_expiry": {
+          "allowed": true,
+          "expiry_epoch": 1720083037,
+          "signer_fingerprint": "AD17A21EF8AED8F1CC02DBD9F7D5C9BF765C61E3"
+        },
+        "primary_fingerprint": "AD17A21EF8AED8F1CC02DBD9F7D5C9BF765C61E3",
+        "public_key_algorithm": 17,
+        "sha256": "1e34f97870c82ba4ba3e96e3f134906e3d1a43b88ed52061bf1b44f3b6ed1991",
+        "sha512": "5c2e6cccf9c5e6a401095e4abf4c4c8eb44ae4cd81debaa94da817f68f7ef39a732e969d5c264912b0a44fd2a0575e2f903d71def38cb95fa073851e3a537e5c",
+        "signer_fingerprint": "AD17A21EF8AED8F1CC02DBD9F7D5C9BF765C61E3",
+        "signing_epoch": 1671098382,
+        "url": "https://www.multiprecision.org/downloads/mpc-1.3.1.tar.gz.sig"
+      },
+      "topology": {
+        "declared_bytes": 3477452,
+        "directories": 9,
+        "files": 348,
+        "links": 0,
+        "member_digest": "3706b9b027925887d7f9ad4ffc95cadd17b3f819389e7cc8b5ad958e97e9fad1",
+        "members": 357,
+        "top_level": "mpc-1.3.1"
+      },
+      "version": "1.3.1"
+    }
+  ],
+  "generated_at": "2026-08-08T00:00:00+00:00",
+  "manifest": "manifests/native-developer-archives.json",
+  "manifest_sha256": "sha256:ff572afd447a117beb358fe88fbf4f7fff368d2fbfbdfbf01b9b3ced23c90e51",
+  "schema": 1,
+  "selection": "authenticated-signed-release-archives",
+  "source_authentication": "authenticated-https-plus-detached-openpgp",
+  "source_set_digest": "sha256:5b2902110a0204f1918d2e897eb8ab30a598c26f8e70d36020e0a097f8517578",
+  "verifier": {
+    "executable": {
+      "sha256": "3f29dddc10e4089aeac5b2675313f4e5fe822abe5ab3bf7898d238c32d758304",
+      "version_line": "gpgv (GnuPG) 2.4.7"
+    },
+    "libraries": [
+      {
+        "filename": "libgcrypt.so.20.5.0",
+        "soname": "libgcrypt.so.20",
+        "sha256": "c3d1cec07ff0d9f4c3abb67d5d828d4cfcda57c87837f0398efdafe3e01bd92c"
+      },
+      {
+        "filename": "libgpg-error.so.0.38.0",
+        "soname": "libgpg-error.so.0",
+        "sha256": "0f791efb82fb4a48f2704bd2bebc509e97d91aeec6102f7148a9dadca1cb7594"
+      }
+    ],
+    "libgcrypt_version": "libgcrypt 1.11.0"
+  }
+}

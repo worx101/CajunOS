@@ -1,0 +1,25 @@
+{
+  "components": [
+    {
+      "canonical_repository": "https://github.com/mkj/dropbear.git",
+      "commit": "1442f00d3f0d755d9f8ba83c5edcd893aa4d71db",
+      "commit_time": "2026-07-23T14:49:41+00:00",
+      "name": "dropbear",
+      "ref": "refs/heads/master",
+      "repository": "https://github.com/mkj/dropbear.git",
+      "signature_status": "N",
+      "signer_fingerprint": "",
+      "subject": "Mention ipv6 format change in changelog",
+      "transport_authenticated": true,
+      "tree": "c4a2166ba5bbab692b2ebe2a780f5a73f6a9dc0f",
+      "vcs": "git"
+    }
+  ],
+  "generated_at": "2026-08-08T00:00:00+00:00",
+  "manifest": "manifests/native-developer-seed.json",
+  "manifest_sha256": "sha256:0c771055b0e0583da514f1efe5ff6cf8bf8d8ae4ad9ffc39fc8eb497b127b38c",
+  "schema": 1,
+  "selection": "reviewed-exact-commits",
+  "source_authentication": "authenticated",
+  "source_set_digest": "sha256:ec7e767fb7a08aa04bd51b27f5639e26ad4cf4d9a15704b40b4c6a6a2224b204"
+}

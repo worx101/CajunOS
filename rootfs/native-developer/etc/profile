@@ -1,0 +1,5 @@
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export HOME=/root
+export USER=root
+export LOGNAME=root
+export LC_ALL=C

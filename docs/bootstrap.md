@@ -288,3 +288,76 @@ through its actual VirtIO-SCSI controller, enable the ext4 journal on the grown
 root filesystem, run a clean forced `fsck`, and retain evidence for both the
 controller-backed boot and filesystem transition. Those are mandatory
 deployment gates rather than properties of this deterministic 9A seed image.
+
+### Native developer seed
+
+`scripts/build-native-developer-seed.sh` implements Stage 9B. It consumes one
+explicit Stage 9A build ID and revalidates that receipt, raw disk, root
+inventory, kernel configuration, dependency receipts, and unchanged tool and
+sysroot selectors before any build tool runs. There is no `latest` lookup and
+the stage never advances a selector. Its separate locked inputs are Dropbear's
+exact Git commit and authenticated release archives for GNU Make, GMP, MPFR,
+and MPC. Detached signatures are verified before the global source lock is
+taken, then the same cached bytes are recaptured and extracted under that lock.
+
+Two Canadian-cross builds use `x86_64-pc-linux-gnu` as build and
+`x86_64-cajunos-linux-gnu` as both host and target. Each independently installs
+native Binutils, GCC and G++, libgcc, libatomic, libstdc++, GNU Make, static
+BusyBox, and static key-only Dropbear. Regular-file hardlinks are converted to
+independent files before canonical inventory and filesystem population so the
+retained tree and an inode-by-inode ext4 replay have identical topology. The
+locked sources remain under `/usr/src/cajunos` for package work. Exact upstream
+public algorithm test vectors embedded in C remain source-hash-bound, while
+three standalone PEM private-key fixtures and Dropbear's embedded fuzz host-key
+fixture are hash-bound, recorded, and omitted. This is a
+package-build-capable seed, not proof of a full native self-host or a final
+package-management policy.
+
+The Stage 9A GPT identity, protective MBR, GRUB boot code, BIOS Boot partition,
+root PARTUUID, and filesystem UUID are retained while the sparse raw disk grows
+to 16 GiB. Partition 2 grows to the new GPT boundary and contains an exact
+12 GiB ext4 filesystem, leaving additional in-partition growth reserve. The
+filesystem is first created without a journal using `MKE2FS_CONFIG=/dev/null`,
+fixed geometry, feature set, hash seed, ownership, and source epoch. A fixed
+64 MiB internal journal is then added with fake-time-bound `tune2fs`. Exact
+superblock fields and features, A/B byte identity, clean state, and forced
+read-only `fsck` are publication gates.
+
+The build accepts exactly one approved Ed25519 public-key file and creates
+`/root/.ssh/authorized_keys` at mode 0600 during root assembly; no placeholder
+key file is tracked. The forge rejects private-key inputs and SSH agent sockets.
+Dropbear compiles password, PAM, forwarding, SFTP, inetd, and public-key option
+code out, generates a unique Ed25519 host key atomically on first boot, and
+sends authentication logs to the serial console. Owner-key possession is
+proved separately from a trusted host through a loopback tunnel with strict
+host-key pinning, no agent forwarding, an interactive PTY, and a namespaced
+SSHSIG response. The request binds the build, challenge, port, canonical host
+key, host-key hash, and owner public-key hash; candidate and completed replay
+verify those semantics against the owner boot's serial evidence before
+accepting the signature. The trusted side closes the response and signature,
+then creates a hash-binding ready sentinel. Handoff uploads all three under
+temporary names and atomically renames the response and signature before
+renaming the sentinel last; the forge ignores incomplete or hash-mismatched
+ingress until the bounded proof timeout.
+
+Publication boots only qcow2 overlays backed by the pristine raw candidate.
+No guest receives host filesystem sharing or network egress. Positive gates
+cover disk-only BIOS/GRUB boot, DHCP, one canonical
+`CAJUNOS_NATIVE_DEVELOPER_IPV4` serial marker, negative/no-key/wrong-key/password
+SSH attempts, public-key and PTY success, C/C++/assembly/static/libatomic/Make
+probes, a native Dropbearkey rebuild, persistent nonce and host key after clean
+reboot, distinct first-boot host keys on independent clones, and forced fsck of
+every booted overlay. A separate wrong-token boot must fail closed.
+
+Completed replay rechecks both retained root trees, both ext4 images, both raw
+disks, source and host inputs, receipt inventories, private-material scans,
+owner request/serial/response/signature binding, a fresh disk-only overlay boot,
+and a fresh wrong-token boot. Failure quarantines unpublished work. The only
+future template source is the pristine, never-booted Stage 9B raw artifact;
+booted overlays are permanently ineligible because deleted/generated private
+key blocks can remain recoverable.
+
+Stage 9B does not deploy a VM on tower1, create a Proxmox template, prove the
+VirtIO-SCSI production controller path, or establish final VM sizing. Those are
+the following deployment milestone, which must start from the pristine artifact
+and retain its own boot, direct-SSH, storage-growth, and template evidence.

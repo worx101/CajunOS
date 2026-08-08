@@ -1,0 +1,183 @@
+#!/bin/sh
+set -eu
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+fail()
+{
+    echo "CAJUNOS_NATIVE_DEVELOPER_FAIL $1"
+    sync
+    exec /sbin/poweroff -f
+}
+
+echo CAJUNOS_NATIVE_DEVELOPER_BEGIN
+
+/bin/mount -t proc -o nosuid,nodev,noexec proc /proc || fail proc
+dev_mount_count=$(/usr/bin/awk '
+    $5 == "/dev" { count++ }
+    END { print count + 0 }
+' /proc/self/mountinfo) || fail devtmpfs-inspect
+case "$dev_mount_count" in
+    0)
+        /bin/mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev \
+            || fail devtmpfs
+        ;;
+    1)
+        ;;
+    *)
+        fail devtmpfs-count
+        ;;
+esac
+/usr/bin/awk '
+    $5 == "/dev" {
+        count++
+        for (field = 7; field <= NF; field++)
+            if ($field == "-" && $(field + 1) == "devtmpfs") type++
+    }
+    END { exit !(count == 1 && type == 1) }
+' /proc/self/mountinfo || fail devtmpfs-type
+[ "$(/bin/stat -c '%u:%g:%a' /dev)" = 0:0:755 ] || fail devtmpfs-mode
+[ -c /dev/console ] || fail devtmpfs-console
+/bin/mount -t sysfs -o nosuid,nodev,noexec sysfs /sys || fail sysfs
+/bin/mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run || fail run
+/bin/mkdir -p /dev/pts
+/bin/mount -t devpts -o mode=0620,gid=5,nosuid,noexec devpts /dev/pts || fail devpts
+
+token_count=$(/usr/bin/awk '
+    { for (field = 1; field <= NF; field++)
+        if ($field == "cajunos.native_developer=1") count++ }
+    END { print count + 0 }
+' /proc/cmdline)
+[ "$token_count" = 1 ] || fail cmdline-token
+
+build_id=$(/bin/cat /etc/cajunos-build-id) || fail build-id
+[ -n "$build_id" ] || fail build-id
+echo "CAJUNOS_NATIVE_DEVELOPER_BUILD_ID $build_id"
+
+/bin/hostname -F /etc/hostname || fail hostname
+/sbin/mdev -s || fail mdev
+/sbin/ip link set lo up || fail loopback
+
+root_device=$(/usr/bin/awk '$5 == "/" { print $3; exit }' /proc/self/mountinfo)
+root_sysfs=
+for candidate in /sys/class/block/*; do
+    [ "$(/bin/cat "$candidate/dev" 2>/dev/null || true)" = "$root_device" ] || continue
+    root_sysfs=$candidate
+    break
+done
+[ -n "$root_sysfs" ] || fail root-device
+root_partuuid=$(/bin/cat /etc/cajunos-root-partuuid) || fail root-partuuid
+/bin/grep -q "^PARTUUID=$root_partuuid$" "$root_sysfs/uevent" || fail root-partuuid
+echo CAJUNOS_NATIVE_DEVELOPER_ROOT_OK
+
+[ -e /sys/class/net/eth0 ] || fail net-device
+/sbin/ip link set eth0 up || fail net-link
+/sbin/udhcpc -f -n -p /run/udhcpc.eth0.pid -t 10 -T 1 \
+    -i eth0 -s /etc/udhcpc/default.script &
+udhcpc_pid=$!
+dhcp_wait=0
+while ! /sbin/ip -4 addr show dev eth0 | /bin/grep -q 'inet '; do
+    if ! /bin/kill -0 "$udhcpc_pid" 2>/dev/null; then
+        wait "$udhcpc_pid" 2>/dev/null || true
+        fail dhcp
+    fi
+    dhcp_wait=$((dhcp_wait + 1))
+    if [ "$dhcp_wait" -ge 15 ]; then
+        /bin/kill "$udhcpc_pid" 2>/dev/null || true
+        wait "$udhcpc_pid" 2>/dev/null || true
+        fail dhcp-timeout
+    fi
+    /bin/sleep 1
+done
+pidfile_pid=$(/bin/cat /run/udhcpc.eth0.pid) || fail dhcp-pidfile
+[ "$pidfile_pid" = "$udhcpc_pid" ] || fail dhcp-pidfile
+/bin/kill -0 "$udhcpc_pid" 2>/dev/null || fail dhcp-renewal
+echo CAJUNOS_NATIVE_DEVELOPER_NETWORK_OK
+ipv4=$(/sbin/ip -4 addr show dev eth0 | /usr/bin/awk '
+    $1 == "inet" {
+        split($2, address, "/")
+        count++
+        value = address[1]
+    }
+    END {
+        if (count != 1 || split(value, octet, ".") != 4) exit 1
+        for (field = 1; field <= 4; field++) {
+            if (octet[field] !~ /^[0-9]+$/ || octet[field] + 0 > 255 ||
+                sprintf("%d", octet[field] + 0) != octet[field]) exit 1
+        }
+        print value
+    }
+') || fail ipv4
+[ -n "$ipv4" ] || fail ipv4
+echo "CAJUNOS_NATIVE_DEVELOPER_IPV4 $ipv4"
+
+/bin/mkdir -p /etc/dropbear
+/bin/chmod 0700 /etc/dropbear
+[ "$(/bin/stat -c '%u:%g:%a' /root)" = 0:0:700 ] || fail root-mode
+[ "$(/bin/stat -c '%u:%g:%a' /root/.ssh)" = 0:0:700 ] \
+    || fail authorized-directory-mode
+host_key=/etc/dropbear/dropbear_ed25519_host_key
+host_key_new=/etc/dropbear/.dropbear_ed25519_host_key.new
+host_key_new_public=$host_key_new.pub
+[ ! -L "$host_key" ] || fail host-key-type
+[ ! -e "$host_key" ] || [ -f "$host_key" ] || fail host-key-type
+if [ -e "$host_key_new" ] || [ -L "$host_key_new" ]; then
+    [ ! -L "$host_key_new" ] && [ -f "$host_key_new" ] \
+        && [ "$(/bin/stat -c '%u:%g:%a' "$host_key_new")" = 0:0:600 ] \
+        || fail host-key-temporary
+    /bin/rm -f "$host_key_new" || fail host-key-temporary
+fi
+if [ -e "$host_key_new_public" ] || [ -L "$host_key_new_public" ]; then
+    [ ! -L "$host_key_new_public" ] && [ -f "$host_key_new_public" ] \
+        || fail host-key-temporary-public
+    /bin/rm -f "$host_key_new_public" || fail host-key-temporary-public
+fi
+if [ ! -s "$host_key" ]; then
+    ( umask 077
+      /usr/bin/dropbearkey -t ed25519 -f "$host_key_new" \
+          >/run/dropbearkey.log 2>&1
+    ) \
+        || fail host-key-generate
+    [ ! -L "$host_key_new" ] && [ -s "$host_key_new" ] \
+        && [ "$(/bin/stat -c '%u:%g:%a' "$host_key_new")" = 0:0:600 ] \
+        || fail host-key-temporary
+    staged_public=$(/usr/bin/dropbearkey -y -f "$host_key_new" 2>/dev/null \
+        | /usr/bin/awk '/^ssh-ed25519 / { print; exit }')
+    [ -n "$staged_public" ] || fail host-key-public
+    [ ! -L "$host_key_new_public" ] && [ -f "$host_key_new_public" ] \
+        || fail host-key-temporary-public
+    /bin/rm -f "$host_key_new_public" || fail host-key-temporary-public
+    sync
+    /bin/mv -f "$host_key_new" "$host_key" || fail host-key-install
+    sync
+fi
+[ "$(/bin/stat -c '%u:%g:%a' /etc/dropbear)" = 0:0:700 ] \
+    || fail host-key-directory-mode
+[ ! -L "$host_key" ] && [ -s "$host_key" ] \
+    && [ "$(/bin/stat -c '%u:%g:%a' "$host_key")" = 0:0:600 ] \
+    || fail host-key-mode
+host_public=$(/usr/bin/dropbearkey -y -f "$host_key" 2>/dev/null \
+    | /usr/bin/awk '/^ssh-ed25519 / { print; exit }')
+[ -n "$host_public" ] || fail host-key-public
+echo "CAJUNOS_NATIVE_DEVELOPER_SSH_HOST_KEY $host_public"
+
+[ ! -L /root/.ssh/authorized_keys ] && [ -s /root/.ssh/authorized_keys ] \
+    || fail authorized-keys
+[ "$(/bin/stat -c '%u:%g:%a' /root/.ssh/authorized_keys)" = 0:0:600 ] \
+    || fail authorized-keys-mode
+/usr/sbin/dropbear -F -E -p 22 -r "$host_key" </dev/null >/dev/console 2>&1 &
+dropbear_spawned_pid=$!
+dropbear_wait=0
+while [ ! -s /run/dropbear.pid ]; do
+    /bin/kill -0 "$dropbear_spawned_pid" 2>/dev/null || fail dropbear
+    dropbear_wait=$((dropbear_wait + 1))
+    [ "$dropbear_wait" -lt 10 ] || fail dropbear-pid
+    /bin/sleep 1
+done
+dropbear_pid=$(/bin/cat /run/dropbear.pid) || fail dropbear-pid
+[ "$dropbear_pid" = "$dropbear_spawned_pid" ] || fail dropbear-pid
+/bin/kill -0 "$dropbear_pid" 2>/dev/null || fail dropbear-pid
+echo CAJUNOS_NATIVE_DEVELOPER_SSH_READY
+
+echo "CAJUNOS_NATIVE_DEVELOPER_UNAME $(/bin/uname -r)"
+echo CAJUNOS_NATIVE_DEVELOPER_OK

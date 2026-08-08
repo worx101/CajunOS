@@ -1,0 +1,32 @@
+#!/bin/sh
+set -u
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+stop_pidfile()
+{
+    pidfile=$1
+    [ -s "$pidfile" ] || return 0
+    pid=$(/bin/cat "$pidfile" 2>/dev/null) || return 0
+    case $pid in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    /bin/kill "$pid" 2>/dev/null || return 0
+    waited=0
+    while /bin/kill -0 "$pid" 2>/dev/null; do
+        waited=$((waited + 1))
+        [ "$waited" -lt 10 ] || break
+        /bin/sleep 1
+    done
+    if /bin/kill -0 "$pid" 2>/dev/null; then
+        /bin/kill -9 "$pid" 2>/dev/null || true
+    fi
+}
+
+stop_pidfile /run/dropbear.pid
+stop_pidfile /run/udhcpc.eth0.pid
+/bin/sync
+# BusyBox umount -a reads /proc/mounts when mtab support is disabled, so /proc
+# must remain mounted until this remount/unmount pass has completed.
+/bin/umount -a -r 2>/dev/null || true
+/bin/mount -o remount,ro / 2>/dev/null || true
+/bin/sync

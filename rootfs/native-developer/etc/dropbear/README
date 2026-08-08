@@ -1,0 +1,2 @@
+The Ed25519 server host key is generated on first boot.  No host private key
+is present in the sealed developer seed.
